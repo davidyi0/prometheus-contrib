@@ -3651,8 +3651,8 @@ prefix is guaranteed to never be used by Prometheus itself.
 
 `<regex>` is any valid
 [RE2 regular expression](https://github.com/google/re2/wiki/Syntax). It is
-required for the `replace`, `keep`, `drop`, `labelmap`,`labeldrop` and `labelkeep` actions. The regex is
-anchored on both ends. To un-anchor the regex, use `.*<regex>.*`.
+required for the `replace`, `keep`, `drop`, `labelmap`,`labeldrop`, `labelkeep` and `dropifany`
+actions. The regex is anchored on both ends. To un-anchor the regex, use `.*<regex>.*`.
 
 `<relabel_action>` determines the relabeling action to take:
 
@@ -3674,6 +3674,15 @@ anchored on both ends. To un-anchor the regex, use `.*<regex>.*`.
   removed from the set of labels.
 * `labelkeep`: Match `regex` against all label names. Any label that does not match will be
   removed from the set of labels.
+* `dropifany`: Match `regex` against the value of every current label (including
+  `__name__`), regardless of `source_labels`. Drop the target (in `relabel_configs`)
+  or the sample (in `metric_relabel_configs`) if any label value matches. This is
+  useful for blocking high-cardinality value patterns (such as request IDs,
+  timestamps, or hostnames) that may appear on labels that aren't known in advance.
+  Because it checks every label, take care that the pattern cannot also match
+  labels you didn't intend to catch (for example a histogram's `le` bucket
+  boundaries), and avoid a catch-all `regex` such as `.*` or `(.*)`, which would
+  drop every target or sample it applies to.
 
 Care must be taken with `labeldrop` and `labelkeep` to ensure that metrics are
 still uniquely labeled once the labels are removed.
