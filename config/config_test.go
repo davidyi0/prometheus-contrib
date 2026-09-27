@@ -445,6 +445,13 @@ var expectedConf = &Config{
 					Action:               relabel.LabelKeep,
 					NameValidationScheme: model.UTF8Validation,
 				},
+				{
+					Regex:                relabel.MustNewRegexp("bad-.*"),
+					Separator:            ";",
+					Replacement:          relabel.DefaultRelabelConfig.Replacement,
+					Action:               relabel.DropIfAny,
+					NameValidationScheme: model.UTF8Validation,
+				},
 			},
 			MetricRelabelConfigs: []*relabel.Config{
 				{
@@ -2328,6 +2335,14 @@ var expectedErrors = []struct {
 	{
 		filename: "labeldrop5.bad.yml",
 		errMsg:   "labeldrop action requires only 'regex', and no other fields",
+	},
+	{
+		filename: "dropifany.bad.yml",
+		errMsg:   "dropifany action requires only 'regex', and no other fields",
+	},
+	{
+		filename: "dropifany2.bad.yml",
+		errMsg:   "relabel configuration for dropifany action requires a non-default 'regex' value",
 	},
 	{
 		filename: "dropequal.bad.yml",
