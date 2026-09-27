@@ -311,3 +311,81 @@ common-test failed, the ui-test/ui-lint steps of `make test` did not run
 PR body should also include `Fixes #12896`.
 
 Not yet claimed on GitHub - claim manually first.
+
+---
+
+## 2026-09-27 - Cycle 5 - prometheus/prometheus #10029 - VERIFIED-READY (partial scope)
+
+**Selection:** further candidates checked and skipped: #12789 (remote-read
+maintainer bwplotka effectively declined, pointing to XOR streaming /
+Thanos; PR #13599 closed), #13152 (WAL corruption / checkpoint data-loss
+semantics undecided by maintainers), #10643 (release/CI Docker tagging, not
+testable locally), #15871 (maintainer requires generated-parser experience +
+design doc), #11268 (UI heatmaps, large), everything else has an open PR or
+is a large/undecided design.
+
+**Issue:** prometheus/prometheus #10029 - "Federation support exemplars".
+beorn7: "can be added relatively easily for federation requests negotiating
+the old protobuf protocol"; restated in 2024 bug scrub as still on the table.
+
+**Branch:** `federate-exemplars` (2 commits, DCO-signed, pushed)
+- `web/federate: federate exemplars of histograms in protobuf format`
+- `docs: document exemplar federation`
+
+**Change:** when the negotiated format is protobuf, exemplar storage is
+available, and the result contains at least one histogram, federation does
+one `ExemplarQuerier.Select(mint, maxt, match[]...)` over the same lookback
+window, matches results to output series by stored labels (hash +
+labels.Equal, before external labels are added), and attaches:
+- native histograms: all exemplars in the window -> `Histogram.Exemplars`
+- NHCB (federated as classic): per bucket, the latest exemplar with
+  value <= le (binary search); an explicit +Inf bucket is appended only when
+  an exemplar exceeds the last bound.
+Exemplar-storage errors are logged at debug + `federationWarnings`, never fail
+the request. Text format and float-only requests skip the query entirely.
+**Scope limit:** float samples are federated as `untyped`, which has no
+exemplar field in the protobuf format, so counter / classic-histogram
+`_bucket` exemplars are NOT federated (documented in docs/federation.md).
+The OpenMetrics route mentioned by beorn7 is untouched.
+
+**Tests:** extended `TestFederationWithNativeHistograms` (web/federate_test.go):
+exemplars on a float series (dropped), two native series (multiple
+exemplars incl. negative value; one exemplar outside the lookback window
+excluded), NHCB (same-bucket replacement, value exactly on a bound, value
+above last bound -> +Inf), round-tripped through Prometheus's own
+ProtobufParser; plus a text-format request (still 200, no exemplars). Test
+fails on upstream/main (empty exemplar map), passes on branch; first commit
+passes on its own.
+
+**Review:** first-pass diagnosis by an Opus subagent; one fresh independent
+Opus review (issue + diff only) -> **SIGN-OFF** in cycle 1. Non-blocking
+notes: (1) NaN exemplar value on NHCB lands in the first bucket (cmp order) -
+could comment or choose +Inf/drop; (2) "latest wins" relies on insertion
+order == timestamp order (true with default exemplar OOO window 0);
+(3) with a nonzero OOO exemplar window on the scraper, re-sent older
+exemplars may be re-ingested - same as scraping client_golang native
+histograms directly; (4) optional extra tests: external labels set, several
+exemplars above last bound; (5) PR should say "Partially addresses #10029" /
+"Ref #10029", NOT "Fixes".
+
+**make lint:** exit 2 - only the same pre-existing
+`notifier/alertmanager.go:48` revive finding as cycle 4 (reproduced on clean
+upstream/main); `golangci-lint run ./web/...` clean.
+**make test:** exit 2 - `cmd/prometheus` (TestStartupInterrupt,
+TestRemoteWrite_PerQueueMetricsAfterRelabeling,
+TestRemoteWrite_ReshardingWithoutDeadlock - startup timeouts) and `tsdb`
+10m timeout, same load pattern as cycle 4. Reran on this branch in
+isolation: the three tests pass, the whole `./cmd/prometheus/` package passes
+(28.6s), `./tsdb/` passes (177s). `./web/` passes. UI steps of `make test`
+not reached (no UI changes).
+
+**Suggested PR title:** `web/federate: federate exemplars of native histograms in protobuf format`
+
+**Suggested release-notes block:**
+```release-notes
+[FEATURE] Federation: When scraped with the protobuf format, include exemplars of native histograms (including NHCB) from the lookback window. Exemplars of float samples are still not federated.
+```
+PR body: "Partially addresses #10029" (protobuf route only; OpenMetrics route
+and float-sample exemplars remain open).
+
+Not yet claimed on GitHub - claim manually first.
