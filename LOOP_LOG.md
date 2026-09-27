@@ -389,3 +389,29 @@ PR body: "Partially addresses #10029" (protobuf route only; OpenMetrics route
 and float-sample exemplars remain open).
 
 Not yet claimed on GitHub - claim manually first.
+
+---
+
+## 2026-09-27 - Cycle 6 - Queue exhausted
+
+Swept every open `help wanted` / `good first issue` in prometheus/prometheus
+(no unassigned `good first issue` exists). Every remaining one is either:
+- claimed: has an open linked PR (most of the list), or someone asked to
+  take it (#15350);
+- done/attempted: #14057, #12896, #10029 (this log), #6857/#14349 (open PRs);
+- skipped as David's local work: #7784, #6222;
+- blocked on maintainer decisions or explicitly discouraged: #13140,
+  #12456, #11061, #12789, #13152, #11964, #15871, #12632, #13939, #13582,
+  #9848;
+- large language/storage designs (`not-as-easy-as-it-looks`, Pmaybe):
+  #12320, #14824, #9850, #11231, #12388, #14342, #11609;
+- not a code bug / more-info-needed / not testable here: #14632, #10431,
+  #10643, #8799, #8217, #16621, #11852.
+Sibling repos (alertmanager, node_exporter, client_golang, common,
+exporter-toolkit, blackbox_exporter, snmp_exporter) have a few candidates
+(e.g. prometheus/common #98 - deprecate the out-of-sync Silence model), but
+David only has a fork of prometheus/prometheus, and creating a fork is a
+public GitHub action, so they're out of scope for this loop. **If David
+forks prometheus/common, #98 is a small, clean next pick.**
+
+**Queue exhausted - stopping.**
