@@ -678,7 +678,12 @@ func checkConfig(agentMode bool, filename string, checkSyntaxOnly bool) ([]strin
 	if err != nil {
 		return nil, nil, err
 	}
+	return checkConfigContents(cfg, checkSyntaxOnly)
+}
 
+// checkConfigContents validates the rule files, scrape configs and
+// Alertmanager configs referenced by an already loaded config.
+func checkConfigContents(cfg *config.Config, checkSyntaxOnly bool) ([]string, []*config.ScrapeConfig, error) {
 	var ruleFiles []string
 	if !checkSyntaxOnly {
 		for _, rf := range cfg.RuleFiles {
