@@ -30,6 +30,7 @@ import (
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/refresh"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/util/strutil"
 )
 
 const (
@@ -45,6 +46,8 @@ const (
 	nomadServicePort    = nomadService + "_port"
 	nomadServiceID      = nomadService + "_id"
 	nomadTags           = nomadLabel + "tags"
+	nomadTag            = nomadLabel + "tag_"
+	nomadTagPresent     = nomadLabel + "tagpresent_"
 )
 
 // DefaultSDConfig is the default nomad SD configuration.
@@ -206,6 +209,22 @@ func (d *Discovery) refresh(context.Context) ([]*targetgroup.Group, error) {
 				if len(instance.Tags) > 0 {
 					tags := d.tagSeparator + strings.Join(instance.Tags, d.tagSeparator) + d.tagSeparator
 					labels[nomadTags] = model.LabelValue(tags)
+				}
+
+				// Add each tag as its own label. A tag of the form "key=value" is split at
+				// the first "=", any other tag gets an empty value. If several tags map to
+				// the same label name, the first one wins.
+				for _, tag := range instance.Tags {
+					k, v, _ := strings.Cut(tag, "=")
+					if k == "" {
+						continue
+					}
+					name := model.LabelName(strutil.SanitizeLabelName(k))
+					if _, ok := labels[nomadTagPresent+name]; ok {
+						continue
+					}
+					labels[nomadTag+name] = model.LabelValue(v)
+					labels[nomadTagPresent+name] = "true"
 				}
 
 				tg.Targets = append(tg.Targets, labels)

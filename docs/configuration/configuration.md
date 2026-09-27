@@ -2921,6 +2921,8 @@ The following meta labels are available on targets during [relabeling](#relabel_
 * `__meta_nomad_service_address`: the service address of the target
 * `__meta_nomad_service_id`: the service ID of the target
 * `__meta_nomad_service_port`: the service port of the target
+* `__meta_nomad_tag_<key>`: each tag of the target, split into key and value at the first `=` (tags without `=` have an empty value)
+* `__meta_nomad_tagpresent_<key>`: `true` for each tag of the target
 * `__meta_nomad_tags`: the list of tags of the target joined by the tag separator
 
 ```yaml

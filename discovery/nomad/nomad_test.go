@@ -114,7 +114,15 @@ func (m *SDMock) HandleServiceHashiCupsGet() {
 				"JobID": "dashboard",
 				"AllocID": "6a1d5f0a-7362-3f5d-9baf-5ed438918e50",
 				"Tags": [
-				"metrics"
+				"metrics",
+				"env=prod",
+				"prom_label__team=infra",
+				"url=http://a/?b=c",
+				"empty=",
+				"=nokey",
+				"env=dev",
+				"app.name=web",
+				"app_name=api"
 				],
 				"Address": "127.0.0.1",
 				"Port": 30456,
@@ -203,16 +211,28 @@ func TestNomadSDRefresh(t *testing.T) {
 	require.Len(t, tg.Targets, 1)
 
 	lbls := model.LabelSet{
-		"__address__":                  model.LabelValue("127.0.0.1:30456"),
-		"__meta_nomad_address":         model.LabelValue("127.0.0.1"),
-		"__meta_nomad_dc":              model.LabelValue("dc1"),
-		"__meta_nomad_namespace":       model.LabelValue("default"),
-		"__meta_nomad_node_id":         model.LabelValue("d92fdc3c-9c2b-298a-e8f4-c33f3a449f09"),
-		"__meta_nomad_service":         model.LabelValue("hashicups"),
-		"__meta_nomad_service_address": model.LabelValue("127.0.0.1"),
-		"__meta_nomad_service_id":      model.LabelValue("_nomad-task-6a1d5f0a-7362-3f5d-9baf-5ed438918e50-group-hashicups-hashicups-hashicups_ui"),
-		"__meta_nomad_service_port":    model.LabelValue("30456"),
-		"__meta_nomad_tags":            model.LabelValue(",metrics,"),
+		"__address__":                              model.LabelValue("127.0.0.1:30456"),
+		"__meta_nomad_address":                     model.LabelValue("127.0.0.1"),
+		"__meta_nomad_dc":                          model.LabelValue("dc1"),
+		"__meta_nomad_namespace":                   model.LabelValue("default"),
+		"__meta_nomad_node_id":                     model.LabelValue("d92fdc3c-9c2b-298a-e8f4-c33f3a449f09"),
+		"__meta_nomad_service":                     model.LabelValue("hashicups"),
+		"__meta_nomad_service_address":             model.LabelValue("127.0.0.1"),
+		"__meta_nomad_service_id":                  model.LabelValue("_nomad-task-6a1d5f0a-7362-3f5d-9baf-5ed438918e50-group-hashicups-hashicups-hashicups_ui"),
+		"__meta_nomad_service_port":                model.LabelValue("30456"),
+		"__meta_nomad_tags":                        model.LabelValue(",metrics,env=prod,prom_label__team=infra,url=http://a/?b=c,empty=,=nokey,env=dev,app.name=web,app_name=api,"),
+		"__meta_nomad_tag_metrics":                 "",
+		"__meta_nomad_tagpresent_metrics":          "true",
+		"__meta_nomad_tag_env":                     "prod",
+		"__meta_nomad_tagpresent_env":              "true",
+		"__meta_nomad_tag_prom_label__team":        "infra",
+		"__meta_nomad_tagpresent_prom_label__team": "true",
+		"__meta_nomad_tag_url":                     "http://a/?b=c",
+		"__meta_nomad_tagpresent_url":              "true",
+		"__meta_nomad_tag_empty":                   "",
+		"__meta_nomad_tagpresent_empty":            "true",
+		"__meta_nomad_tag_app_name":                "web",
+		"__meta_nomad_tagpresent_app_name":         "true",
 	}
 	require.Equal(t, lbls, tg.Targets[0])
 }
