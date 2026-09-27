@@ -69,6 +69,18 @@ const (
 	serviceIDLabel = model.MetaLabelPrefix + "consul_service_id"
 	// serviceKindLabel is the name of the label containing the service kind.
 	serviceKindLabel = model.MetaLabelPrefix + "consul_service_kind"
+	// proxyDestinationServiceNameLabel is the name of the label containing the name of the service a Connect proxy represents.
+	proxyDestinationServiceNameLabel = model.MetaLabelPrefix + "consul_proxy_destination_service_name"
+	// proxyDestinationServiceIDLabel is the name of the label containing the ID of the service instance a Connect proxy represents.
+	proxyDestinationServiceIDLabel = model.MetaLabelPrefix + "consul_proxy_destination_service_id"
+	// proxyLocalServiceAddressLabel is the name of the label containing the address a Connect proxy forwards to.
+	proxyLocalServiceAddressLabel = model.MetaLabelPrefix + "consul_proxy_local_service_address"
+	// proxyLocalServicePortLabel is the name of the label containing the port a Connect proxy forwards to.
+	proxyLocalServicePortLabel = model.MetaLabelPrefix + "consul_proxy_local_service_port"
+	// proxyExposedPathListenerPortLabel is the prefix for the labels mapping a path exposed by a Connect proxy to its listener port.
+	proxyExposedPathListenerPortLabel = model.MetaLabelPrefix + "consul_proxy_exposed_path_listener_port_"
+	// proxyExposedPathLocalPathPortLabel is the prefix for the labels mapping a path exposed by a Connect proxy to the local port serving it.
+	proxyExposedPathLocalPathPortLabel = model.MetaLabelPrefix + "consul_proxy_exposed_path_local_path_port_"
 
 	// Constants for instrumentation.
 	namespace = "prometheus"
@@ -584,6 +596,20 @@ func (srv *consulService) watch(ctx context.Context, ch chan<- []*targetgroup.Gr
 		for k, v := range serviceNode.Node.TaggedAddresses {
 			name := strutil.SanitizeLabelName(k)
 			labels[taggedAddressesLabel+model.LabelName(name)] = model.LabelValue(v)
+		}
+
+		// Add the Connect sidecar proxy configuration, including the paths it exposes
+		// outside of the mesh (e.g. /metrics), so that they can be scraped via relabeling.
+		if proxy := serviceNode.Service.Proxy; serviceNode.Service.Kind == consul.ServiceKindConnectProxy && proxy != nil {
+			labels[proxyDestinationServiceNameLabel] = model.LabelValue(proxy.DestinationServiceName)
+			labels[proxyDestinationServiceIDLabel] = model.LabelValue(proxy.DestinationServiceID)
+			labels[proxyLocalServiceAddressLabel] = model.LabelValue(proxy.LocalServiceAddress)
+			labels[proxyLocalServicePortLabel] = model.LabelValue(strconv.Itoa(proxy.LocalServicePort))
+			for _, p := range proxy.Expose.Paths {
+				name := model.LabelName(strutil.SanitizeLabelName(p.Path))
+				labels[proxyExposedPathListenerPortLabel+name] = model.LabelValue(strconv.Itoa(p.ListenerPort))
+				labels[proxyExposedPathLocalPathPortLabel+name] = model.LabelValue(strconv.Itoa(p.LocalPathPort))
+			}
 		}
 
 		tgroup.Targets = append(tgroup.Targets, labels)

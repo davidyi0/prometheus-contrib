@@ -1458,6 +1458,31 @@ The following meta labels are available on targets during [relabeling](#relabel_
 * `__meta_consul_tagged_address_<key>`: each node tagged address key value of the target
 * `__meta_consul_tags`: the list of tags of the target joined by the tag separator
 
+If the service is a [Connect sidecar proxy](https://developer.hashicorp.com/consul/docs/connect/proxies/proxy-config-reference)
+(`__meta_consul_service_kind` is `connect-proxy`), the following meta labels are also available:
+
+* `__meta_consul_proxy_destination_service_name`: the name of the service the proxy represents
+* `__meta_consul_proxy_destination_service_id`: the ID of the service instance the proxy represents
+* `__meta_consul_proxy_local_service_address`: the address the proxy forwards traffic to
+* `__meta_consul_proxy_local_service_port`: the port the proxy forwards traffic to
+* `__meta_consul_proxy_exposed_path_listener_port_<path>`: for each path exposed by the proxy, the port on which the proxy serves it
+* `__meta_consul_proxy_exposed_path_local_path_port_<path>`: for each path exposed by the proxy, the port on which the service serves it
+
+In the exposed path labels, unsupported characters of the path are replaced by underscores, e.g. `/metrics`
+becomes `_metrics`. The exposed paths allow scraping a service whose port is only reachable through the mesh.
+For example, to scrape the `/metrics` path exposed by each sidecar proxy:
+
+```yaml
+relabel_configs:
+  - source_labels: [__meta_consul_service_kind]
+    regex: connect-proxy
+    action: keep
+  - source_labels: [__address__, __meta_consul_proxy_exposed_path_listener_port__metrics]
+    regex: (.+):\d+;(.+)
+    target_label: __address__
+    replacement: $1:$2
+```
+
 ```yaml
 # The information to access the Consul API. It is to be defined
 # as the Consul documentation requires.
