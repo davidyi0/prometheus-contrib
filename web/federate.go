@@ -16,17 +16,21 @@ package web
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/timestamp"
@@ -172,6 +176,14 @@ Loop:
 		return strings.Compare(ni, nj)
 	})
 
+	var exemplars map[uint64][]exemplar.QueryResult
+	if isProtobufFormat(format.FormatType()) && h.exemplarStorage != nil &&
+		slices.ContainsFunc(vec, func(s promql.Sample) bool { return s.H != nil }) {
+		// Exemplars can only be federated attached to histograms, and only in
+		// the protobuf format.
+		exemplars = h.federationExemplars(req, mint, maxt, matcherSets)
+	}
+
 	externalLabels := h.config.GlobalConfig.ExternalLabels.Map()
 	if _, ok := externalLabels[model.InstanceLabel]; !ok {
 		externalLabels[model.InstanceLabel] = ""
@@ -192,9 +204,7 @@ Loop:
 		formatType := format.FormatType()
 		if isHistogram &&
 			!s.H.UsesCustomBuckets() &&
-			formatType != expfmt.TypeProtoDelim &&
-			formatType != expfmt.TypeProtoText &&
-			formatType != expfmt.TypeProtoCompact {
+			!isProtobufFormat(formatType) {
 			// Can't serve a native histogram with a non-protobuf format.
 			// (We can serve an NHCB, though, as it is converted to a
 			// classic histogram for federation.)
@@ -294,10 +304,11 @@ Loop:
 			}
 		} else {
 			lastHistogramWasGauge = s.H.CounterResetHint == histogram.GaugeType
+			exs := findExemplars(exemplars, s.Metric)
 			if s.H.UsesCustomBuckets() {
-				protMetric.Histogram = makeClassicHistogram(s.H)
+				protMetric.Histogram = makeClassicHistogram(s.H, exs)
 			} else {
-				protMetric.Histogram = makeNativeHistogram(s.H)
+				protMetric.Histogram = makeNativeHistogram(s.H, exs)
 			}
 		}
 		lastWasHistogram = isHistogram
@@ -312,9 +323,65 @@ Loop:
 	}
 }
 
-// makeNativeHistogram creates a dto.Histogram representing a native histogram.
-// Use only for standard exponential schemas.
-func makeNativeHistogram(h *histogram.FloatHistogram) *dto.Histogram {
+// isProtobufFormat returns whether the given format type is one of the
+// protobuf exposition formats.
+func isProtobufFormat(t expfmt.FormatType) bool {
+	return t == expfmt.TypeProtoDelim || t == expfmt.TypeProtoText || t == expfmt.TypeProtoCompact
+}
+
+// federationExemplars returns the exemplars in the time range [mint, maxt] of
+// the series matching any of the matcher sets, keyed by the hash of the series
+// labels. Errors are logged and result in no exemplars being returned, so that
+// the federation of samples is never prevented by exemplar storage problems.
+func (h *Handler) federationExemplars(req *http.Request, mint, maxt int64, matcherSets [][]*labels.Matcher) map[uint64][]exemplar.QueryResult {
+	eq, err := h.exemplarStorage.ExemplarQuerier(req.Context())
+	if err != nil {
+		h.logger.Debug("Federation failed to get exemplar querier", "err", err)
+		federationWarnings.Inc()
+		return nil
+	}
+	results, err := eq.Select(mint, maxt, matcherSets...)
+	if err != nil {
+		h.logger.Debug("Federation failed to select exemplars", "err", err)
+		federationWarnings.Inc()
+		return nil
+	}
+	byHash := make(map[uint64][]exemplar.QueryResult, len(results))
+	for _, r := range results {
+		hash := r.SeriesLabels.Hash()
+		byHash[hash] = append(byHash[hash], r)
+	}
+	return byHash
+}
+
+// findExemplars returns the exemplars of the series with the given labels.
+func findExemplars(exemplars map[uint64][]exemplar.QueryResult, lset labels.Labels) []exemplar.Exemplar {
+	for _, r := range exemplars[lset.Hash()] {
+		if labels.Equal(r.SeriesLabels, lset) {
+			return r.Exemplars
+		}
+	}
+	return nil
+}
+
+// makeExemplar creates a dto.Exemplar from the given exemplar.
+func makeExemplar(e exemplar.Exemplar) *dto.Exemplar {
+	result := &dto.Exemplar{
+		Value:     proto.Float64(e.Value),
+		Timestamp: timestamppb.New(time.UnixMilli(e.Ts)),
+	}
+	e.Labels.Range(func(l labels.Label) {
+		result.Label = append(result.Label, &dto.LabelPair{
+			Name:  proto.String(l.Name),
+			Value: proto.String(l.Value),
+		})
+	})
+	return result
+}
+
+// makeNativeHistogram creates a dto.Histogram representing a native histogram,
+// including all the given exemplars. Use only for standard exponential schemas.
+func makeNativeHistogram(h *histogram.FloatHistogram, exemplars []exemplar.Exemplar) *dto.Histogram {
 	result := &dto.Histogram{
 		SampleCountFloat: proto.Float64(h.Count),
 		SampleSum:        proto.Float64(h.Sum),
@@ -342,12 +409,16 @@ func makeNativeHistogram(h *histogram.FloatHistogram) *dto.Histogram {
 			}
 		}
 	}
+	for _, e := range exemplars {
+		result.Exemplars = append(result.Exemplars, makeExemplar(e))
+	}
 	return result
 }
 
 // makeClassicHistogram creates a dto.Histogram representing a classic
-// histogram. Use only for NHCB (schema -53).
-func makeClassicHistogram(h *histogram.FloatHistogram) *dto.Histogram {
+// histogram. Use only for NHCB (schema -53). Each bucket carries the latest of
+// the given exemplars that falls into it.
+func makeClassicHistogram(h *histogram.FloatHistogram, exemplars []exemplar.Exemplar) *dto.Histogram {
 	result := &dto.Histogram{
 		SampleCountFloat: proto.Float64(h.Count),
 		SampleSum:        proto.Float64(h.Sum),
@@ -370,9 +441,20 @@ func makeClassicHistogram(h *histogram.FloatHistogram) *dto.Histogram {
 			CumulativeCountFloat: proto.Float64(cumulativeCount),
 		}
 	}
-	// Note that we do not add the +Inf bucket explicitly. In the protobuf
-	// exposition format, it is optional. For other exposition formats, the
-	// code converting the protobuf created here into the actual exposition
-	// payload will add the +Inf bucket.
+	// Note that we do not add the +Inf bucket explicitly unless it is needed
+	// to carry an exemplar. In the protobuf exposition format, it is optional.
+	// For other exposition formats, the code converting the protobuf created
+	// here into the actual exposition payload will add the +Inf bucket.
+	for _, e := range exemplars {
+		i, _ := slices.BinarySearch(h.CustomValues, e.Value)
+		if i == len(result.Bucket) {
+			result.Bucket = append(result.Bucket, &dto.Bucket{
+				UpperBound:           proto.Float64(math.Inf(1)),
+				CumulativeCountFloat: proto.Float64(h.Count),
+			})
+		}
+		// Exemplars are sorted by timestamp, so the latest one wins.
+		result.Bucket[i].Exemplar = makeExemplar(e)
+	}
 	return result
 }

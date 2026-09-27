@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/config"
+	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/textparse"
@@ -306,11 +307,11 @@ func normalizeBody(body *bytes.Buffer) string {
 }
 
 func TestFederationWithNativeHistograms(t *testing.T) {
-	storage := teststorage.New(t)
+	st := teststorage.New(t)
 
 	var expVec promql.Vector
 
-	db := storage.DB
+	db := st.DB
 	hist := &histogram.Histogram{
 		Count:         12,
 		ZeroCount:     2,
@@ -354,14 +355,41 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 		PositiveBuckets: []int64{3, -1, -1},
 		CustomValues:    []float64{0.1, 0.2, 0.5, 1, 2},
 	}
+	ex := func(traceID string, v float64, ts int64) exemplar.Exemplar {
+		return exemplar.Exemplar{Labels: labels.FromStrings("trace_id", traceID), Value: v, Ts: ts, HasTs: true}
+	}
+	// Exemplars to append per series. Only those within the lookback window
+	// and attached to histograms can be federated.
+	appendExemplars := map[int][]exemplar.Exemplar{
+		0: {ex("float", 1, 100*60*1000)},
+		1: {ex("a", 1.5, 100*60*1000-2000), ex("b", -2, 100*60*1000-1000)},
+		5: {ex("too-old", 3, 90*60*1000), ex("c", 3, 100*60*1000)},
+		6: {
+			ex("d", 0.05, 100*60*1000-4000),
+			ex("e", 0.07, 100*60*1000-3000), // Replaces "d" in the same bucket.
+			ex("f", 0.2, 100*60*1000-2000),  // On the upper bound of the 2nd bucket.
+			ex("g", 5, 100*60*1000-1000),    // Above the last bound, needs +Inf bucket.
+		},
+	}
+	expExemplars := map[string][]exemplar.Exemplar{
+		`{__name__="test_metric", foo="1", instance=""}`:                   {ex("a", 1.5, 100*60*1000-2000), ex("b", -2, 100*60*1000-1000)},
+		`{__name__="test_metric", foo="5", instance=""}`:                   {ex("c", 3, 100*60*1000)},
+		`{__name__="test_metric_bucket", foo="6", instance="", le="0.1"}`:  {ex("e", 0.07, 100*60*1000-3000)},
+		`{__name__="test_metric_bucket", foo="6", instance="", le="0.2"}`:  {ex("f", 0.2, 100*60*1000-2000)},
+		`{__name__="test_metric_bucket", foo="6", instance="", le="+Inf"}`: {ex("g", 5, 100*60*1000-1000)},
+	}
+
 	app := db.Appender(context.Background())
 	for i := range 7 {
 		l := labels.FromStrings("__name__", "test_metric", "foo", strconv.Itoa(i))
 		expL := labels.FromStrings("__name__", "test_metric", "instance", "", "foo", strconv.Itoa(i))
-		var err error
+		var (
+			ref storage.SeriesRef
+			err error
+		)
 		switch i {
 		case 0, 3:
-			_, err = app.Append(0, l, 100*60*1000, float64(i*100))
+			ref, err = app.Append(0, l, 100*60*1000, float64(i*100))
 			expVec = append(expVec, promql.Sample{
 				T:      100 * 60 * 1000,
 				F:      float64(i * 100),
@@ -372,14 +400,14 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 			hist.ZeroCount++
 			hist.Count++
 			fh := hist.ToFloat(nil)
-			_, err = app.AppendHistogram(0, l, 100*60*1000, nil, fh.Copy())
+			ref, err = app.AppendHistogram(0, l, 100*60*1000, nil, fh.Copy())
 			expVec = append(expVec, promql.Sample{
 				T:      100 * 60 * 1000,
 				H:      fh,
 				Metric: expL,
 			})
 		case 4:
-			_, err = app.AppendHistogram(0, l, 100*60*1000, histWithoutZeroBucket.Copy(), nil)
+			ref, err = app.AppendHistogram(0, l, 100*60*1000, histWithoutZeroBucket.Copy(), nil)
 			expVec = append(expVec, promql.Sample{
 				T:      100 * 60 * 1000,
 				H:      histWithoutZeroBucket.ToFloat(nil),
@@ -388,14 +416,14 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 		case 5:
 			hist.ZeroCount++
 			hist.Count++
-			_, err = app.AppendHistogram(0, l, 100*60*1000, hist.Copy(), nil)
+			ref, err = app.AppendHistogram(0, l, 100*60*1000, hist.Copy(), nil)
 			expVec = append(expVec, promql.Sample{
 				T:      100 * 60 * 1000,
 				H:      hist.ToFloat(nil),
 				Metric: expL,
 			})
 		case 6:
-			_, err = app.AppendHistogram(0, l, 100*60*1000, nhcb.Copy(), nil)
+			ref, err = app.AppendHistogram(0, l, 100*60*1000, nhcb.Copy(), nil)
 			expL = labels.FromStrings("__name__", "test_metric_count", "instance", "", "foo", strconv.Itoa(i))
 			expVec = append(expVec, promql.Sample{
 				T:      100 * 60 * 1000,
@@ -446,13 +474,18 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 			})
 		}
 		require.NoError(t, err)
+		for _, e := range appendExemplars[i] {
+			_, err = app.AppendExemplar(ref, l, e)
+			require.NoError(t, err)
+		}
 	}
 	require.NoError(t, app.Commit())
 
 	h := &Handler{
-		localStorage:  &dbAdapter{db},
-		lookbackDelta: 5 * time.Minute,
-		now:           func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
+		localStorage:    &dbAdapter{db},
+		exemplarStorage: db,
+		lookbackDelta:   5 * time.Minute,
+		now:             func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
 		config: &config.Config{
 			GlobalConfig: config.GlobalConfig{},
 		},
@@ -470,6 +503,7 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 	require.NoError(t, err)
 	p := textparse.NewProtobufParser(body, false, false, false, false, labels.NewSymbolTable())
 	var actVec promql.Vector
+	actExemplars := map[string][]exemplar.Exemplar{}
 	metricFamilies := 0
 	l := labels.Labels{}
 	for {
@@ -480,6 +514,11 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 		require.NoError(t, err)
 		if et == textparse.EntryHistogram || et == textparse.EntrySeries {
 			p.Labels(&l)
+			var e exemplar.Exemplar
+			for p.Exemplar(&e) {
+				actExemplars[l.String()] = append(actExemplars[l.String()], e)
+				e = exemplar.Exemplar{}
+			}
 		}
 		switch et {
 		case textparse.EntryHelp:
@@ -506,4 +545,14 @@ func TestFederationWithNativeHistograms(t *testing.T) {
 	// test it with switching histogram types for metric families.
 	require.Equal(t, 4, metricFamilies)
 	testutil.RequireEqual(t, expVec, actVec)
+	testutil.RequireEqual(t, expExemplars, actExemplars)
+
+	// The text format cannot carry exemplars, but federation must still work.
+	req = httptest.NewRequest(http.MethodGet, "http://example.org/federate?match[]=test_metric", http.NoBody)
+	req.Header.Add("Accept", "text/plain;version=0.0.4")
+	res = httptest.NewRecorder()
+	h.federation(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `test_metric_bucket{foo="6",instance="",le="2"} 6`)
+	require.NotContains(t, res.Body.String(), "trace_id")
 }
