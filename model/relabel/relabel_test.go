@@ -730,6 +730,118 @@ func TestRelabel(t *testing.T) {
 				"__unit__": "bytes",
 			}),
 		},
+		{ // dropifany: one label value matches, the whole sample is dropped.
+			input: labels.FromMap(map[string]string{
+				"a": "foo",
+				"b": "1712345678901",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp(`.*\d{10,}.*`),
+					Action: DropIfAny,
+				},
+			},
+			drop: true,
+		},
+		{ // dropifany: no label value matches, the sample is kept unchanged.
+			input: labels.FromMap(map[string]string{
+				"a": "foo",
+				"b": "12345",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp(`.*\d{10,}.*`),
+					Action: DropIfAny,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a": "foo",
+				"b": "12345",
+			}),
+		},
+		{ // dropifany: only one of several label values matches; still dropped.
+			input: labels.FromMap(map[string]string{
+				"a": "x",
+				"b": "y",
+				"c": "abc_0123456789ab",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp(`.*[[:alpha:]]{3}_[[:xdigit:]]{12}.*`),
+					Action: DropIfAny,
+				},
+			},
+			drop: true,
+		},
+		{ // dropifany: the regex is anchored, so a bare substring pattern does not match.
+			input: labels.FromMap(map[string]string{
+				"a": "foo-bar",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp("bar"),
+					Action: DropIfAny,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a": "foo-bar",
+			}),
+		},
+		{ // dropifany: matching is on label values, not names.
+			input: labels.FromMap(map[string]string{
+				"bar": "foo",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp("bar"),
+					Action: DropIfAny,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"bar": "foo",
+			}),
+		},
+		{ // dropifany: __name__ is a label like any other, so its value is checked too.
+			input: labels.FromMap(map[string]string{
+				"__name__": "id_1234567890",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp(`.*[[:alpha:]]{2}_\d{10}.*`),
+					Action: DropIfAny,
+				},
+			},
+			drop: true,
+		},
+		{ // dropifany: an empty label set never matches and is kept.
+			input: labels.EmptyLabels(),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp(`.*\d{10,}.*`),
+					Action: DropIfAny,
+				},
+			},
+			output: labels.EmptyLabels(),
+		},
+		{ // dropifany: sees a label value set earlier in the same relabel chain, not just the input.
+			input: labels.FromMap(map[string]string{
+				"a": "x", // Does not itself match; only "b", set below, does.
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("(.*)"),
+					Replacement:  "1712345678901",
+					TargetLabel:  "b",
+					Action:       Replace,
+				},
+				{
+					Regex:  MustNewRegexp(`.*\d{10,}.*`),
+					Action: DropIfAny,
+				},
+			},
+			drop: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -847,6 +959,46 @@ func TestRelabelValidate(t *testing.T) {
 				Replacement:          "${1}",
 				NameValidationScheme: model.LegacyValidation,
 			},
+		},
+		{
+			config: Config{
+				Regex:                MustNewRegexp(`.*\d{10,}.*`),
+				Action:               DropIfAny,
+				Separator:            DefaultRelabelConfig.Separator,
+				Replacement:          DefaultRelabelConfig.Replacement,
+				NameValidationScheme: model.UTF8Validation,
+			},
+		},
+		{
+			config: Config{
+				Action:               DropIfAny,
+				Separator:            DefaultRelabelConfig.Separator,
+				Replacement:          DefaultRelabelConfig.Replacement,
+				NameValidationScheme: model.UTF8Validation,
+			},
+			expected: "requires a non-default 'regex' value",
+		},
+		{
+			config: Config{
+				SourceLabels:         model.LabelNames{"a"},
+				Regex:                MustNewRegexp(`.*\d{10,}.*`),
+				Action:               DropIfAny,
+				Separator:            DefaultRelabelConfig.Separator,
+				Replacement:          DefaultRelabelConfig.Replacement,
+				NameValidationScheme: model.UTF8Validation,
+			},
+			expected: "requires only 'regex'",
+		},
+		{
+			config: Config{
+				Regex:                MustNewRegexp(`.*\d{10,}.*`),
+				Action:               DropIfAny,
+				TargetLabel:          "foo",
+				Separator:            DefaultRelabelConfig.Separator,
+				Replacement:          DefaultRelabelConfig.Replacement,
+				NameValidationScheme: model.UTF8Validation,
+			},
+			expected: "requires only 'regex'",
 		},
 	}
 	for i, test := range tests {

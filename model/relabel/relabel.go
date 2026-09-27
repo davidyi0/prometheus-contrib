@@ -66,6 +66,8 @@ const (
 	Lowercase Action = "lowercase"
 	// Uppercase maps input letters to their upper case.
 	Uppercase Action = "uppercase"
+	// DropIfAny drops the sample if the regex matches any of its label values.
+	DropIfAny Action = "dropifany"
 )
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
@@ -75,7 +77,7 @@ func (a *Action) UnmarshalYAML(unmarshal func(any) error) error {
 		return err
 	}
 	switch act := Action(strings.ToLower(s)); act {
-	case Replace, Keep, Drop, HashMod, LabelMap, LabelDrop, LabelKeep, Lowercase, Uppercase, KeepEqual, DropEqual:
+	case Replace, Keep, Drop, HashMod, LabelMap, LabelDrop, LabelKeep, Lowercase, Uppercase, KeepEqual, DropEqual, DropIfAny:
 		*a = act
 		return nil
 	}
@@ -178,7 +180,7 @@ func (c *Config) Validate(nameValidationScheme model.ValidationScheme) error {
 		}
 	}
 
-	if c.Action == LabelDrop || c.Action == LabelKeep {
+	if c.Action == LabelDrop || c.Action == LabelKeep || c.Action == DropIfAny {
 		if c.SourceLabels != nil ||
 			c.TargetLabel != DefaultRelabelConfig.TargetLabel ||
 			c.Modulus != DefaultRelabelConfig.Modulus ||
@@ -186,6 +188,10 @@ func (c *Config) Validate(nameValidationScheme model.ValidationScheme) error {
 			c.Replacement != DefaultRelabelConfig.Replacement {
 			return fmt.Errorf("%s action requires only 'regex', and no other fields", c.Action)
 		}
+	}
+
+	if c.Action == DropIfAny && (c.Regex.Regexp == nil || c.Regex == DefaultRelabelConfig.Regex) {
+		return fmt.Errorf("relabel configuration for %s action requires a non-default 'regex' value, as the default matches every label value", c.Action)
 	}
 
 	return nil
@@ -360,6 +366,16 @@ func relabel(cfg *Config, lb *labels.Builder) (keep bool) {
 				lb.Del(l.Name)
 			}
 		})
+	case DropIfAny:
+		drop := false
+		lb.Range(func(l labels.Label) {
+			if !drop && cfg.Regex.MatchString(l.Value) {
+				drop = true
+			}
+		})
+		if drop {
+			return false
+		}
 	default:
 		panic(fmt.Errorf("relabel: unknown relabel action type %q", cfg.Action))
 	}
