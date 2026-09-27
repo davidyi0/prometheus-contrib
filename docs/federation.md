@@ -17,6 +17,15 @@ as `untyped`, while histogram samples are federated with their full type
 information). Technically, this violates the rules of the protobuf exposition
 format, but Prometheus is nevertheless able to ingest all metrics correctly._
 
+_Note about exemplars: If exemplar storage is enabled on the federated
+Prometheus server and the protobuf format is used for scraping, the exemplars
+of native histograms (including native histograms with custom buckets) within
+the lookback window are federated along with the histogram samples. For native
+histograms with custom buckets, each bucket carries only its latest exemplar.
+Exemplars of float samples cannot be federated, as float samples are federated
+as `untyped`, which cannot carry exemplars. The scraping Prometheus server
+needs exemplar storage enabled to ingest the federated exemplars._
+
 ## Use cases
 
 There are different use cases for federation. Commonly, it is used to either
