@@ -67,6 +67,8 @@ const (
 	taggedAddressesLabel = model.MetaLabelPrefix + "consul_tagged_address_"
 	// serviceIDLabel is the name of the label containing the service ID.
 	serviceIDLabel = model.MetaLabelPrefix + "consul_service_id"
+	// serviceKindLabel is the name of the label containing the service kind.
+	serviceKindLabel = model.MetaLabelPrefix + "consul_service_kind"
 
 	// Constants for instrumentation.
 	namespace = "prometheus"
@@ -562,6 +564,7 @@ func (srv *consulService) watch(ctx context.Context, ch chan<- []*targetgroup.Gr
 			serviceAddressLabel: model.LabelValue(serviceNode.Service.Address),
 			servicePortLabel:    model.LabelValue(strconv.Itoa(serviceNode.Service.Port)),
 			serviceIDLabel:      model.LabelValue(serviceNode.Service.ID),
+			serviceKindLabel:    model.LabelValue(serviceNode.Service.Kind),
 			healthLabel:         model.LabelValue(serviceNode.Checks.AggregatedStatus()),
 		}
 

@@ -231,6 +231,57 @@ const (
 }]`
 
 	ServicesTestAnswer = `{"test": ["tag1"], "other": ["tag2"]}`
+
+	// ConnectProxyTestAnswer is a Consul Connect sidecar proxy registered for the "test" service.
+	ConnectProxyTestAnswer = `
+[{
+	"Node": {
+		"ID": "b78c2e48-5ef3-1814-31b8-0d880f50471e",
+		"Node": "node1",
+		"Address": "10.0.0.1",
+		"Datacenter": "test-dc",
+		"CreateIndex": 1,
+		"ModifyIndex": 1
+	},
+	"Service": {
+		"Kind": "connect-proxy",
+		"ID": "test-sidecar-proxy",
+		"Service": "test-sidecar-proxy",
+		"Tags": [],
+		"Address": "",
+		"Port": 21000,
+		"Proxy": {
+			"DestinationServiceName": "test",
+			"DestinationServiceID": "test-1",
+			"LocalServiceAddress": "127.0.0.1",
+			"LocalServicePort": 8080,
+			"Expose": {
+				"Paths": [
+					{
+						"ListenerPort": 21500,
+						"Path": "/metrics",
+						"LocalPathPort": 9102,
+						"Protocol": "http"
+					},
+					{
+						"ListenerPort": 21501,
+						"Path": "/health/ready",
+						"LocalPathPort": 8080,
+						"Protocol": "http"
+					}
+				]
+			}
+		},
+		"CreateIndex": 1,
+		"ModifyIndex": 1
+	},
+	"Checks": [{
+		"Node": "node1",
+		"CheckID": "serfHealth",
+		"Name": "Serf Health Status",
+		"Status": "passing"
+	}]
+}]`
 )
 
 func newServer(t *testing.T) (*httptest.Server, *SDConfig) {
@@ -555,6 +606,101 @@ func TestBothFiltersOption(t *testing.T) {
 	require.Equal(t, `Service.Tags contains "canary"`, healthFilter, "Health endpoint should receive only the health_filter.")
 	cancel()
 	for range ch {
+	}
+}
+
+// TestServiceLabels verifies the meta labels set on the target of a discovered service instance.
+func TestServiceLabels(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		service  string
+		answer   string
+		expected model.LabelSet
+	}{
+		{
+			name:    "typical service",
+			service: "test",
+			answer:  ServiceTestAnswer,
+			expected: model.LabelSet{
+				"__address__":                                "1.1.1.1:3341",
+				"__meta_consul_address":                      "1.1.1.1",
+				"__meta_consul_health":                       "passing",
+				"__meta_consul_metadata_rack_name":           "2304",
+				"__meta_consul_namespace":                    "",
+				"__meta_consul_node":                         "node1",
+				"__meta_consul_partition":                    "",
+				"__meta_consul_service_address":              "",
+				"__meta_consul_service_id":                   "test",
+				"__meta_consul_service_kind":                 "",
+				"__meta_consul_service_metadata_environment": "staging",
+				"__meta_consul_service_metadata_version":     "1.0.0",
+				"__meta_consul_service_port":                 "3341",
+				"__meta_consul_tagged_address_lan":           "192.168.10.10",
+				"__meta_consul_tagged_address_wan":           "10.0.10.10",
+				"__meta_consul_tags":                         ",tag1,",
+			},
+		},
+		{
+			name:    "connect sidecar proxy",
+			service: "test-sidecar-proxy",
+			answer:  ConnectProxyTestAnswer,
+			expected: model.LabelSet{
+				"__address__":                   "10.0.0.1:21000",
+				"__meta_consul_address":         "10.0.0.1",
+				"__meta_consul_health":          "passing",
+				"__meta_consul_namespace":       "",
+				"__meta_consul_node":            "node1",
+				"__meta_consul_partition":       "",
+				"__meta_consul_service_address": "",
+				"__meta_consul_service_id":      "test-sidecar-proxy",
+				"__meta_consul_service_kind":    "connect-proxy",
+				"__meta_consul_service_port":    "21000",
+				"__meta_consul_tags":            ",,",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Add("X-Consul-Index", "1")
+				switch r.URL.Path {
+				case "/v1/agent/self":
+					w.Write([]byte(AgentAnswer))
+				case "/v1/catalog/services":
+					w.Write([]byte(`{"` + tc.service + `": []}`))
+				case "/v1/health/service/" + tc.service:
+					w.Write([]byte(tc.answer))
+				default:
+					t.Errorf("Unhandled consul call: %s", r.URL)
+				}
+			}))
+			t.Cleanup(stub.Close)
+
+			stuburl, err := url.Parse(stub.URL)
+			require.NoError(t, err)
+
+			d := newDiscovery(t, &SDConfig{
+				Server:          stuburl.Host,
+				TagSeparator:    ",",
+				RefreshInterval: model.Duration(1 * time.Second),
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			ch := make(chan []*targetgroup.Group)
+			go func() {
+				d.Run(ctx, ch)
+				close(ch)
+			}()
+			tgs := <-ch
+			require.Len(t, tgs, 1)
+			require.Equal(t, tc.service, tgs[0].Source)
+			require.Len(t, tgs[0].Targets, 1)
+			require.Equal(t, tc.expected, tgs[0].Targets[0])
+			cancel()
+			for range ch {
+			}
+		})
 	}
 }
 
