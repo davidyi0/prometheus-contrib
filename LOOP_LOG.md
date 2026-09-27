@@ -230,3 +230,84 @@ container (a pre-populated Go module cache/vendor directory baked into the
 image, matching the pinned go1.26.7 toolchain, or widening the network
 egress allowlist to cover the full dependency host set) before relying on
 this loop's `make test`/`make lint` sign-off again.
+
+---
+
+## 2026-09-27 - Cycle 4 - prometheus/prometheus #12896 - VERIFIED-READY
+
+**Environment:** new machine this cycle (WSL2, go1.27.0, populated module
+cache, golangci-lint, node). The Go toolchain/module blocker from cycle 3
+does not apply here; `make test` / `make lint` ran for real.
+
+**Selection:** re-scanned `help wanted` / `good first issue` across
+prometheus/prometheus and the sibling repos. Skipped: #7784 and #6222 (local
+branches `consul-connect-proxy-labels` / `promtool-check-config-stdin`
+already exist here - assumed to be David's manual work, left untouched);
+#13140 (OpenStack regions - workaround exists, maintainers want an
+OpenStack expert); #11964 (blocked on a design doc for exemplars in blocks);
+#14632 (user networking issue, not a bug); #12456, #11061, #15350, #11231,
+#12320 (large/undecided designs); most others have open PRs. Sibling repos:
+node_exporter #2097 is effectively done (PR #3554 merged), client_golang
+#1733 fixed by #1963, alertmanager #5112 needs a design decision first. Also
+note: David only has a fork of prometheus/prometheus, so sibling-repo issues
+can't be pushed anywhere without creating a fork (a public action) - they
+were effectively out of scope this cycle.
+
+**Issue:** prometheus/prometheus #12896 - "Turn one source label into
+multiple target labels". Consul/Nomad only expose tags as one joined string
+(`__meta_consul_tags`), so users can't turn `key=value` tags into labels.
+beorn7 (2025 bug scrub) suggested fixing it in the SD, K8s-style.
+
+**Branch:** `consul-nomad-tag-labels` (2 commits, DCO-signed, pushed)
+- `discovery/consul: expose each service tag as its own meta label`
+- `discovery/nomad: expose each service tag as its own meta label`
+
+**Change:** for each tag, split at the first `=` (no `=` -> empty value),
+sanitize the key, and emit `__meta_<sd>_tag_<key>=<value>` plus
+`__meta_<sd>_tagpresent_<key>="true"` (mirrors K8s `_label_`/`_labelpresent_`).
+Empty keys (`=foo`) skipped; first occurrence wins on duplicate/sanitize-
+colliding keys (deterministic, tags are an ordered list). `__meta_*_tags`
+unchanged -> purely additive. Always on (no config flag), like Consul Meta
+and K8s labels. Docs updated for both SDs. Reporter's case becomes
+`labelmap` with `regex: __meta_consul_tag_prom_label__(.+)`.
+
+**Tests:** extended existing tests - `TestOneService` (consul, now asserts
+the full label set) and `TestNomadSDRefresh` (nomad). Fixture tags cover
+plain tag, k=v, multiple `=`, empty value, empty key, duplicate key,
+sanitize collision. Both tests fail with the code change reverted and pass
+with it; first commit passes on its own.
+
+**Review:** first-pass diagnosis by an Opus subagent; one independent Opus
+review (issue text + diff only) -> **SIGN-OFF** on the first cycle.
+Non-blocking notes: (1) maintainers may ask why it's unconditional rather
+than opt-in - explain in PR (meta labels dropped after relabeling, same as
+K8s/Consul Meta; many-tag setups get ~2x tag-count extra discovered labels);
+(2) docs could add one clause on key sanitization / first-wins / empty-key
+skip; (3) consul test's `__meta_consul_tags` expectation looks odd because
+the test config leaves tag_separator empty - correct, just unusual.
+
+**make lint:** exit 2, but the only finding is
+`notifier/alertmanager.go:48` (revive unexported-return) - file not
+touched by this branch, reproduced on clean upstream/main (likely newer
+local golangci-lint). Lint on `./discovery/consul/... ./discovery/nomad/...`
+is clean.
+**make test:** exit 2 from `common-test`: 6 tests in `cmd/prometheus`
+(TestDocumentation "signal: killed", TestStartupInterrupt, TestQueryLog,
+TestRemoteWrite_*, TestHeadCompactionWhileScraping - all startup/readiness
+timeouts) and `tsdb` hitting the 10m go test timeout. All are load/timing
+failures under the full parallel run on WSL: the 6 cmd/prometheus tests
+pass when rerun in isolation on this branch, and `go test ./tsdb/` passes
+on both this branch (178s) and clean upstream/main (169s). Every other
+package passed, including discovery/consul and discovery/nomad. Because
+common-test failed, the ui-test/ui-lint steps of `make test` did not run
+(no UI changes in this branch).
+
+**Suggested PR title:** `discovery/consul,nomad: expose each tag as its own meta label`
+
+**Suggested release-notes block:**
+```release-notes
+[FEATURE] Consul SD, Nomad SD: Add `__meta_consul_tag_<key>` / `__meta_nomad_tag_<key>` and matching `tagpresent` meta labels for each service tag, splitting `key=value` tags at the first `=`, so tags can be mapped to target labels with `labelmap`.
+```
+PR body should also include `Fixes #12896`.
+
+Not yet claimed on GitHub - claim manually first.
