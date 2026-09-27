@@ -207,7 +207,7 @@ const (
 	"Service": {
 		"ID": "test",
 		"Service": "test",
-		"Tags": ["tag1"],
+		"Tags": ["tag1", "env=prod", "prom_label__team=infra", "url=http://a/?b=c", "empty=", "=nokey", "env=dev", "app.name=web", "app_name=api"],
 		"Address": "",
 		"Meta": {"version":"1.0.0","environment":"staging"},
 		"Port": 3341,
@@ -350,8 +350,40 @@ func TestOneService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan []*targetgroup.Group)
 	go d.Run(ctx, ch)
-	checkOneTarget(t, <-ch)
+	tgs := <-ch
+	checkOneTarget(t, tgs)
 	cancel()
+
+	require.Len(t, tgs[0].Targets, 1)
+	require.Equal(t, model.LabelSet{
+		"__address__":                                "1.1.1.1:3341",
+		"__meta_consul_address":                      "1.1.1.1",
+		"__meta_consul_health":                       "passing",
+		"__meta_consul_metadata_rack_name":           "2304",
+		"__meta_consul_namespace":                    "",
+		"__meta_consul_node":                         "node1",
+		"__meta_consul_partition":                    "",
+		"__meta_consul_service_address":              "",
+		"__meta_consul_service_id":                   "test",
+		"__meta_consul_service_metadata_environment": "staging",
+		"__meta_consul_service_metadata_version":     "1.0.0",
+		"__meta_consul_service_port":                 "3341",
+		"__meta_consul_tagged_address_lan":           "192.168.10.10",
+		"__meta_consul_tagged_address_wan":           "10.0.10.10",
+		"__meta_consul_tags":                         "tag1env=prodprom_label__team=infraurl=http://a/?b=cempty==nokeyenv=devapp.name=webapp_name=api",
+		"__meta_consul_tag_tag1":                     "",
+		"__meta_consul_tagpresent_tag1":              "true",
+		"__meta_consul_tag_env":                      "prod",
+		"__meta_consul_tagpresent_env":               "true",
+		"__meta_consul_tag_prom_label__team":         "infra",
+		"__meta_consul_tagpresent_prom_label__team":  "true",
+		"__meta_consul_tag_url":                      "http://a/?b=c",
+		"__meta_consul_tagpresent_url":               "true",
+		"__meta_consul_tag_empty":                    "",
+		"__meta_consul_tagpresent_empty":             "true",
+		"__meta_consul_tag_app_name":                 "web",
+		"__meta_consul_tagpresent_app_name":          "true",
+	}, tgs[0].Targets[0])
 }
 
 // Watch the test service with a specific tag and node-meta.

@@ -49,6 +49,10 @@ const (
 	serviceMetaDataLabel = model.MetaLabelPrefix + "consul_service_metadata_"
 	// tagsLabel is the name of the label containing the tags assigned to the target.
 	tagsLabel = model.MetaLabelPrefix + "consul_tags"
+	// tagLabel is the prefix for the labels mapping to each of a target's tags.
+	tagLabel = model.MetaLabelPrefix + "consul_tag_"
+	// tagPresentLabel is the prefix for the labels marking the presence of each of a target's tags.
+	tagPresentLabel = model.MetaLabelPrefix + "consul_tagpresent_"
 	// serviceLabel is the name of the label containing the service name.
 	serviceLabel = model.MetaLabelPrefix + "consul_service"
 	// healthLabel is the name of the label containing the health of the service instance.
@@ -581,6 +585,22 @@ func (srv *consulService) watch(ctx context.Context, ch chan<- []*targetgroup.Gr
 		for k, v := range serviceNode.Node.TaggedAddresses {
 			name := strutil.SanitizeLabelName(k)
 			labels[taggedAddressesLabel+model.LabelName(name)] = model.LabelValue(v)
+		}
+
+		// Add each of the service's tags as its own label. A tag of the form "key=value" is
+		// split at the first "=", any other tag gets an empty value. If several tags map to
+		// the same label name, the first one wins.
+		for _, tag := range serviceNode.Service.Tags {
+			k, v, _ := strings.Cut(tag, "=")
+			if k == "" {
+				continue
+			}
+			name := model.LabelName(strutil.SanitizeLabelName(k))
+			if _, ok := labels[tagPresentLabel+name]; ok {
+				continue
+			}
+			labels[tagLabel+name] = model.LabelValue(v)
+			labels[tagPresentLabel+name] = "true"
 		}
 
 		tgroup.Targets = append(tgroup.Targets, labels)

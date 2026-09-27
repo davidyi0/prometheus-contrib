@@ -1454,6 +1454,8 @@ The following meta labels are available on targets during [relabeling](#relabel_
 * `__meta_consul_service_metadata_<key>`: each service metadata key value of the target
 * `__meta_consul_service_port`: the service port of the target
 * `__meta_consul_service`: the name of the service the target belongs to
+* `__meta_consul_tag_<key>`: each service tag of the target, split into key and value at the first `=` (tags without `=` have an empty value)
+* `__meta_consul_tagpresent_<key>`: `true` for each service tag of the target
 * `__meta_consul_tagged_address_<key>`: each node tagged address key value of the target
 * `__meta_consul_tags`: the list of tags of the target joined by the tag separator
 
