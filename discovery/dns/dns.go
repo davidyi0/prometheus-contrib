@@ -294,7 +294,12 @@ func lookupWithSearchPath(name string, qtype uint16, logger *slog.Logger) (*dns.
 	if err != nil {
 		return nil, fmt.Errorf("could not load resolv.conf: %w", err)
 	}
+	return lookupWithConfig(name, qtype, conf, logger)
+}
 
+// lookupWithConfig is lookupWithSearchPath with an already loaded resolver
+// configuration.
+func lookupWithConfig(name string, qtype uint16, conf *dns.ClientConfig, logger *slog.Logger) (*dns.Msg, error) {
 	allResponsesValid := true
 
 	for _, lname := range conf.NameList(name) {
