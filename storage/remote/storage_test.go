@@ -193,6 +193,22 @@ func TestRequiredRemoteRead(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			name: "failing required endpoint next to working required endpoint",
+			endpoints: []endpoint{
+				{url: working.URL, required: true, readRecent: true},
+				{url: failing.URL, required: true, readRecent: true},
+			},
+			expectErr: true,
+		},
+		{
+			name: "two working required endpoints",
+			endpoints: []endpoint{
+				{url: working.URL, required: true, readRecent: true},
+				{url: working.URL, required: true, readRecent: true},
+			},
+			expectSeries: 1,
+		},
+		{
 			name:      "required endpoint skipped by required_matchers",
 			endpoints: []endpoint{{url: failing.URL, required: true, readRecent: true, requiredMatchers: model.LabelSet{"job": "special"}}},
 		},
@@ -209,8 +225,9 @@ func TestRequiredRemoteRead(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, rs.Close()) })
 
 			conf := &config.Config{GlobalConfig: config.DefaultGlobalConfig}
-			for _, e := range tc.endpoints {
+			for i, e := range tc.endpoints {
 				rrConf := baseRemoteReadConfig(e.url)
+				rrConf.Name = fmt.Sprintf("endpoint-%d", i)
 				rrConf.Required = e.required
 				rrConf.ReadRecent = e.readRecent
 				rrConf.RequiredMatchers = e.requiredMatchers

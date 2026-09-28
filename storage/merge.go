@@ -44,6 +44,12 @@ type mergeGenericQuerier struct {
 //
 // In case of overlaps between the data given by primaries' and secondaries' Selects, merge function will be used.
 func NewMergeQuerier(primaries, secondaries []Querier, mergeFn VerticalSeriesMergeFunc) Querier {
+	return newMergeQuerier(primaries, secondaries, mergeFn, false)
+}
+
+// newMergeQuerier is like NewMergeQuerier, but if concurrentPrimaries is true,
+// Select is also called concurrently when there are only multiple primaries.
+func newMergeQuerier(primaries, secondaries []Querier, mergeFn VerticalSeriesMergeFunc, concurrentPrimaries bool) Querier {
 	primaries = filterQueriers(primaries)
 	secondaries = filterQueriers(secondaries)
 
@@ -64,7 +70,7 @@ func NewMergeQuerier(primaries, secondaries []Querier, mergeFn VerticalSeriesMer
 		queriers = append(queriers, newSecondaryQuerierFrom(q))
 	}
 
-	concurrentSelect := len(secondaries) > 0
+	concurrentSelect := len(secondaries) > 0 || (concurrentPrimaries && len(primaries) > 1)
 
 	return &querierAdapter{&mergeGenericQuerier{
 		mergeFn:          (&seriesMergerAdapter{VerticalSeriesMergeFunc: mergeFn}).Merge,
@@ -89,6 +95,12 @@ func filterQueriers(qs []Querier) []Querier {
 // In case of overlaps between the data given by primaries' and secondaries' Selects, merge function will be used.
 // TODO(bwplotka): Currently merge will compact overlapping chunks with bigger chunk, without limit. Split it: https://github.com/prometheus/tsdb/issues/670
 func NewMergeChunkQuerier(primaries, secondaries []ChunkQuerier, mergeFn VerticalChunkSeriesMergeFunc) ChunkQuerier {
+	return newMergeChunkQuerier(primaries, secondaries, mergeFn, false)
+}
+
+// newMergeChunkQuerier is like NewMergeChunkQuerier, but if concurrentPrimaries
+// is true, Select is also called concurrently when there are only multiple primaries.
+func newMergeChunkQuerier(primaries, secondaries []ChunkQuerier, mergeFn VerticalChunkSeriesMergeFunc, concurrentPrimaries bool) ChunkQuerier {
 	primaries = filterChunkQueriers(primaries)
 	secondaries = filterChunkQueriers(secondaries)
 
@@ -109,7 +121,7 @@ func NewMergeChunkQuerier(primaries, secondaries []ChunkQuerier, mergeFn Vertica
 		queriers = append(queriers, newSecondaryQuerierFromChunk(q))
 	}
 
-	concurrentSelect := len(secondaries) > 0
+	concurrentSelect := len(secondaries) > 0 || (concurrentPrimaries && len(primaries) > 1)
 
 	return &chunkQuerierAdapter{&mergeGenericQuerier{
 		mergeFn:          (&chunkSeriesMergerAdapter{VerticalChunkSeriesMergeFunc: mergeFn}).Merge,

@@ -17,10 +17,13 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/atomic"
 
 	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/labels"
@@ -332,6 +335,37 @@ func TestFanoutErrors(t *testing.T) {
 	}
 }
 
+func TestFanoutRequiredQueriersSelectConcurrently(t *testing.T) {
+	selects := &atomic.Int32{}
+	fanoutStorage := storage.NewFanout(nil, teststorage.New(t), barrierStorage{n: 2, selects: selects})
+	matcher := labels.MustNewMatcher(labels.MatchEqual, "a", "b")
+
+	t.Run("samples", func(t *testing.T) {
+		selects.Store(0)
+		querier, err := fanoutStorage.Querier(0, 8000)
+		require.NoError(t, err)
+		defer querier.Close()
+
+		ss := querier.Select(context.Background(), true, nil, matcher)
+		for ss.Next() {
+		}
+		require.NoError(t, ss.Err())
+		require.Equal(t, int32(2), selects.Load())
+	})
+	t.Run("chunks", func(t *testing.T) {
+		selects.Store(0)
+		querier, err := fanoutStorage.ChunkQuerier(0, 8000)
+		require.NoError(t, err)
+		defer querier.Close()
+
+		ss := querier.Select(context.Background(), true, nil, matcher)
+		for ss.Next() {
+		}
+		require.NoError(t, ss.Err())
+		require.Equal(t, int32(2), selects.Load())
+	})
+}
+
 var errSelect = errors.New("select error")
 
 type errStorage struct{}
@@ -376,12 +410,89 @@ type requiredStorage struct {
 	required storage.Storage
 }
 
-func (s requiredStorage) RequiredQuerier(mint, maxt int64) (storage.Querier, error) {
-	return s.required.Querier(mint, maxt)
+func (s requiredStorage) RequiredQueriers(mint, maxt int64) ([]storage.Querier, error) {
+	q, err := s.required.Querier(mint, maxt)
+	return []storage.Querier{q}, err
 }
 
-func (s requiredStorage) RequiredChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
-	return s.required.ChunkQuerier(mint, maxt)
+func (s requiredStorage) RequiredChunkQueriers(mint, maxt int64) ([]storage.ChunkQuerier, error) {
+	q, err := s.required.ChunkQuerier(mint, maxt)
+	return []storage.ChunkQuerier{q}, err
+}
+
+// barrierStorage is a secondary storage with only required sources, whose
+// Selects fail unless they are all called concurrently.
+type barrierStorage struct {
+	errStorage
+	n       int
+	selects *atomic.Int32
+}
+
+func (barrierStorage) Querier(_, _ int64) (storage.Querier, error) {
+	return storage.NoopQuerier(), nil
+}
+
+func (barrierStorage) ChunkQuerier(_, _ int64) (storage.ChunkQuerier, error) {
+	return storage.NoopChunkedQuerier(), nil
+}
+
+func (s barrierStorage) RequiredQueriers(_, _ int64) ([]storage.Querier, error) {
+	barrier := &sync.WaitGroup{}
+	barrier.Add(s.n)
+	qs := make([]storage.Querier, s.n)
+	for i := range qs {
+		qs[i] = barrierQuerier{barrier: barrier, selects: s.selects}
+	}
+	return qs, nil
+}
+
+func (s barrierStorage) RequiredChunkQueriers(_, _ int64) ([]storage.ChunkQuerier, error) {
+	barrier := &sync.WaitGroup{}
+	barrier.Add(s.n)
+	qs := make([]storage.ChunkQuerier, s.n)
+	for i := range qs {
+		qs[i] = barrierChunkQuerier{barrierQuerier{barrier: barrier, selects: s.selects}}
+	}
+	return qs, nil
+}
+
+type barrierQuerier struct {
+	errQuerier
+	barrier *sync.WaitGroup
+	selects *atomic.Int32
+}
+
+// wait returns an error unless all queriers sharing the barrier reach it in time.
+func (q barrierQuerier) wait() error {
+	q.selects.Add(1)
+	q.barrier.Done()
+	done := make(chan struct{})
+	go func() {
+		q.barrier.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return errors.New("selects were not called concurrently")
+	}
+}
+
+func (q barrierQuerier) Select(context.Context, bool, *storage.SelectHints, ...*labels.Matcher) storage.SeriesSet {
+	if err := q.wait(); err != nil {
+		return storage.ErrSeriesSet(err)
+	}
+	return storage.EmptySeriesSet()
+}
+
+type barrierChunkQuerier struct{ barrierQuerier }
+
+func (q barrierChunkQuerier) Select(context.Context, bool, *storage.SelectHints, ...*labels.Matcher) storage.ChunkSeriesSet {
+	if err := q.wait(); err != nil {
+		return storage.ErrChunkSeriesSet(err)
+	}
+	return storage.EmptyChunkSeriesSet()
 }
 
 type mockStorage struct {

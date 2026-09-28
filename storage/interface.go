@@ -82,10 +82,10 @@ type SampleAndChunkQueryable interface {
 // by it are handled like the primary querier, so their errors fail the query
 // instead of being returned as warnings.
 type RequiredQueryable interface {
-	// RequiredQuerier returns a Querier over the required sources only.
-	RequiredQuerier(mint, maxt int64) (Querier, error)
-	// RequiredChunkQuerier returns a ChunkQuerier over the required sources only.
-	RequiredChunkQuerier(mint, maxt int64) (ChunkQuerier, error)
+	// RequiredQueriers returns one Querier per required source.
+	RequiredQueriers(mint, maxt int64) ([]Querier, error)
+	// RequiredChunkQueriers returns one ChunkQuerier per required source.
+	RequiredChunkQueriers(mint, maxt int64) ([]ChunkQuerier, error)
 }
 
 // Storage ingests and manages samples, along with various indexes. All methods

@@ -40,8 +40,8 @@ type fanout struct {
 // * If the primary querier returns an error, then any of the Querier operations will fail.
 // * If any secondary querier returns an error the result from that queries is discarded. The overall operation will succeed,
 // and the error from the secondary querier will be returned as a warning.
-// * If a secondary Storage implements RequiredQueryable, the queriers it returns from RequiredQuerier and
-// RequiredChunkQuerier are handled like the primary querier.
+// * If a secondary Storage implements RequiredQueryable, the queriers it returns from RequiredQueriers and
+// RequiredChunkQueriers are handled like the primary querier. Selects on them run concurrently.
 //
 // NOTE: In the case of Prometheus, it treats all remote storages as secondary / best effort, except
 // remote read endpoints configured as required.
@@ -89,10 +89,9 @@ func (f *fanout) Querier(mint, maxt int64) (Querier, error) {
 				secondaries = append(secondaries, querier)
 			}
 			if rq, ok := storage.(RequiredQueryable); ok {
-				querier, err = rq.RequiredQuerier(mint, maxt)
-				if err == nil {
-					primaries = append(primaries, querier)
-				}
+				var required []Querier
+				required, err = rq.RequiredQueriers(mint, maxt)
+				primaries = append(primaries, required...)
 			}
 		}
 		if err != nil {
@@ -107,7 +106,7 @@ func (f *fanout) Querier(mint, maxt int64) (Querier, error) {
 			return nil, errors.Join(errs...)
 		}
 	}
-	return NewMergeQuerier(primaries, secondaries, ChainedSeriesMerge), nil
+	return newMergeQuerier(primaries, secondaries, ChainedSeriesMerge, true), nil
 }
 
 func (f *fanout) ChunkQuerier(mint, maxt int64) (ChunkQuerier, error) {
@@ -123,10 +122,9 @@ func (f *fanout) ChunkQuerier(mint, maxt int64) (ChunkQuerier, error) {
 		if err == nil {
 			secondaries = append(secondaries, querier)
 			if rq, ok := storage.(RequiredQueryable); ok {
-				querier, err = rq.RequiredChunkQuerier(mint, maxt)
-				if err == nil {
-					primaries = append(primaries, querier)
-				}
+				var required []ChunkQuerier
+				required, err = rq.RequiredChunkQueriers(mint, maxt)
+				primaries = append(primaries, required...)
 			}
 		}
 		if err != nil {
@@ -141,7 +139,7 @@ func (f *fanout) ChunkQuerier(mint, maxt int64) (ChunkQuerier, error) {
 			return nil, errors.Join(errs...)
 		}
 	}
-	return NewMergeChunkQuerier(primaries, secondaries, NewCompactingChunkSeriesMerger(ChainedSeriesMerge)), nil
+	return newMergeChunkQuerier(primaries, secondaries, NewCompactingChunkSeriesMerger(ChainedSeriesMerge), true), nil
 }
 
 func (f *fanout) Appender(ctx context.Context) Appender {

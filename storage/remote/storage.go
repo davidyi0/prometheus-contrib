@@ -201,10 +201,10 @@ func (s *Storage) ChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
 	return storage.NewMergeChunkQuerier(nil, queriers, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)), nil
 }
 
-// RequiredQuerier implements storage.RequiredQueryable. It returns a querier
-// combining the remote read endpoints configured as required, whose Select
-// errors are returned as errors rather than warnings.
-func (s *Storage) RequiredQuerier(mint, maxt int64) (storage.Querier, error) {
+// RequiredQueriers implements storage.RequiredQueryable. It returns a querier
+// for each remote read endpoint configured as required, whose Select errors
+// are returned as errors rather than warnings.
+func (s *Storage) RequiredQueriers(mint, maxt int64) ([]storage.Querier, error) {
 	s.mtx.Lock()
 	queryables := s.requiredQueryables
 	s.mtx.Unlock()
@@ -216,17 +216,16 @@ func (s *Storage) RequiredQuerier(mint, maxt int64) (storage.Querier, error) {
 			return nil, err
 		}
 		if q != storage.NoopQuerier() {
-			q = requiredQuerier{q}
+			queriers = append(queriers, requiredQuerier{q})
 		}
-		queriers = append(queriers, q)
 	}
-	return storage.NewMergeQuerier(queriers, nil, storage.ChainedSeriesMerge), nil
+	return queriers, nil
 }
 
-// RequiredChunkQuerier implements storage.RequiredQueryable. It returns a chunk
-// querier combining the remote read endpoints configured as required, whose
+// RequiredChunkQueriers implements storage.RequiredQueryable. It returns a
+// chunk querier for each remote read endpoint configured as required, whose
 // Select errors are returned as errors rather than warnings.
-func (s *Storage) RequiredChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
+func (s *Storage) RequiredChunkQueriers(mint, maxt int64) ([]storage.ChunkQuerier, error) {
 	s.mtx.Lock()
 	queryables := s.requiredQueryables
 	s.mtx.Unlock()
@@ -238,11 +237,10 @@ func (s *Storage) RequiredChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, 
 			return nil, err
 		}
 		if q != storage.NoopChunkedQuerier() {
-			q = requiredChunkQuerier{q}
+			queriers = append(queriers, requiredChunkQuerier{q})
 		}
-		queriers = append(queriers, q)
 	}
-	return storage.NewMergeChunkQuerier(queriers, nil, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)), nil
+	return queriers, nil
 }
 
 // requiredQuerier returns Select errors of a required remote read endpoint as
