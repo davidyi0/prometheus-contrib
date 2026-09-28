@@ -60,6 +60,7 @@ remote_read:
     name: read_special
     required_matchers:
       job: special
+    required: true
     tls_config:
       cert_file: valid_cert_file
       key_file: valid_key_file

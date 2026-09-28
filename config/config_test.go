@@ -211,6 +211,7 @@ var expectedConf = &Config{
 				EnableHTTP2:     true,
 			},
 			FilterExternalLabels: true,
+			Required:             true,
 		},
 	},
 

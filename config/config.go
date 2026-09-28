@@ -1713,6 +1713,10 @@ type RemoteReadConfig struct {
 
 	// Whether to use the external labels as selectors for the remote read endpoint.
 	FilterExternalLabels bool `yaml:"filter_external_labels,omitempty"`
+
+	// Required makes errors from the remote read endpoint fail the query
+	// instead of being returned as warnings alongside partial results.
+	Required bool `yaml:"required,omitempty"`
 }
 
 // SetDirectory joins any relative file paths with dir.
