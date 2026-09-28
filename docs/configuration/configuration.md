@@ -1804,10 +1804,13 @@ resolver. This has the following limitations:
 * Multicast DNS ([RFC6762](https://tools.ietf.org/html/rfc6762)) is not
   supported. Names such as `printer.local` are sent as ordinary queries to the
   configured nameservers.
-* If all nameservers answer that a name does not exist, the name yields no
-  targets and no error is reported.
+* The next nameserver is only tried if a nameserver gives no usable answer
+  (for example on a timeout or `SERVFAIL`). If a nameserver answers that a name
+  does not exist, the other nameservers are not asked, and the name yields no
+  targets without an error being reported.
 
-To discover targets through mDNS or other non-DNS name resolution, generate the
+To discover targets through mDNS or other non-DNS name resolution, configure a
+nameserver in `/etc/resolv.conf` that answers for these names, or generate the
 list of targets with an external tool and use [`file_sd_config`](#file_sd_config)
 or [`http_sd_config`](#http_sd_config) instead.
 
