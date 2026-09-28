@@ -4146,10 +4146,19 @@ headers:
 # Whether to use the external labels as selectors for the remote read endpoint.
 [ filter_external_labels: <boolean> | default = true ]
 
+# Whether errors from the remote read endpoint fail the query. By default, such
+# errors are returned as warnings along with the results from the other sources.
+# Queries that skip the endpoint because of required_matchers or read_recent
+# are not affected. Label name and value lookups remain best effort.
+[ required: <boolean> | default = false ]
+
 # HTTP client settings, including authentication methods (such as basic auth and
 # authorization), proxy configurations, TLS options, custom HTTP headers, etc.
 [ <http_config> ]
 ```
+
+When `required` is set, an unavailable remote read endpoint makes every query
+and rule evaluation that reads from it fail, including alerting rules.
 
 There is a list of
 [integrations](https://prometheus.io/docs/operating/integrations/#remote-endpoints-and-storage)
