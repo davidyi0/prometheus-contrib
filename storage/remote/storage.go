@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/scrape"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/logging"
 )
 
@@ -60,10 +61,14 @@ type Storage struct {
 
 	// For reads.
 	queryables             []storage.SampleAndChunkQueryable
+	requiredQueryables     []storage.SampleAndChunkQueryable
 	localStartTimeCallback startTimeCallback
 }
 
-var _ storage.Storage = &Storage{}
+var (
+	_ storage.Storage           = &Storage{}
+	_ storage.RequiredQueryable = &Storage{}
+)
 
 // NewStorage returns a remote.Storage.
 func NewStorage(l *slog.Logger, reg prometheus.Registerer, stCallback startTimeCallback, walDir string, flushDeadline time.Duration, sm ReadyScrapeManager, enableTypeAndUnitLabels bool) *Storage {
@@ -97,7 +102,7 @@ func (s *Storage) ApplyConfig(conf *config.Config) error {
 
 	// Update read clients
 	readHashes := make(map[string]struct{})
-	queryables := make([]storage.SampleAndChunkQueryable, 0, len(conf.RemoteReadConfigs))
+	var queryables, requiredQueryables []storage.SampleAndChunkQueryable
 	for _, rrConf := range conf.RemoteReadConfigs {
 		hash, err := toHash(rrConf)
 		if err != nil {
@@ -133,15 +138,21 @@ func (s *Storage) ApplyConfig(conf *config.Config) error {
 		if !rrConf.FilterExternalLabels {
 			externalLabels = labels.EmptyLabels()
 		}
-		queryables = append(queryables, NewSampleAndChunkQueryableClient(
+		q := NewSampleAndChunkQueryableClient(
 			c,
 			externalLabels,
 			labelsToEqualityMatchers(rrConf.RequiredMatchers),
 			rrConf.ReadRecent,
 			s.localStartTimeCallback,
-		))
+		)
+		if rrConf.Required {
+			requiredQueryables = append(requiredQueryables, q)
+		} else {
+			queryables = append(queryables, q)
+		}
 	}
 	s.queryables = queryables
+	s.requiredQueryables = requiredQueryables
 
 	return nil
 }
@@ -152,7 +163,7 @@ func (*Storage) StartTime() (int64, error) {
 }
 
 // Querier returns a storage.MergeQuerier combining the remote client queriers
-// of each configured remote read endpoint.
+// of each remote read endpoint that is not configured as required.
 // Returned querier will never return error as all queryables are assumed best effort.
 // Additionally all returned queriers ensure that its Select's SeriesSets have ready data after first `Next` invoke.
 // This is because Prometheus (fanout and secondary queries) can't handle the stream failing half way through by design.
@@ -173,7 +184,7 @@ func (s *Storage) Querier(mint, maxt int64) (storage.Querier, error) {
 }
 
 // ChunkQuerier returns a storage.MergeQuerier combining the remote client queriers
-// of each configured remote read endpoint.
+// of each remote read endpoint that is not configured as required.
 func (s *Storage) ChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
 	s.mtx.Lock()
 	queryables := s.queryables
@@ -188,6 +199,85 @@ func (s *Storage) ChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
 		queriers = append(queriers, q)
 	}
 	return storage.NewMergeChunkQuerier(nil, queriers, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)), nil
+}
+
+// RequiredQuerier implements storage.RequiredQueryable. It returns a querier
+// combining the remote read endpoints configured as required, whose Select
+// errors are returned as errors rather than warnings.
+func (s *Storage) RequiredQuerier(mint, maxt int64) (storage.Querier, error) {
+	s.mtx.Lock()
+	queryables := s.requiredQueryables
+	s.mtx.Unlock()
+
+	queriers := make([]storage.Querier, 0, len(queryables))
+	for _, queryable := range queryables {
+		q, err := queryable.Querier(mint, maxt)
+		if err != nil {
+			return nil, err
+		}
+		if q != storage.NoopQuerier() {
+			q = requiredQuerier{q}
+		}
+		queriers = append(queriers, q)
+	}
+	return storage.NewMergeQuerier(queriers, nil, storage.ChainedSeriesMerge), nil
+}
+
+// RequiredChunkQuerier implements storage.RequiredQueryable. It returns a chunk
+// querier combining the remote read endpoints configured as required, whose
+// Select errors are returned as errors rather than warnings.
+func (s *Storage) RequiredChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
+	s.mtx.Lock()
+	queryables := s.requiredQueryables
+	s.mtx.Unlock()
+
+	queriers := make([]storage.ChunkQuerier, 0, len(queryables))
+	for _, queryable := range queryables {
+		q, err := queryable.ChunkQuerier(mint, maxt)
+		if err != nil {
+			return nil, err
+		}
+		if q != storage.NoopChunkedQuerier() {
+			q = requiredChunkQuerier{q}
+		}
+		queriers = append(queriers, q)
+	}
+	return storage.NewMergeChunkQuerier(queriers, nil, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)), nil
+}
+
+// requiredQuerier returns Select errors of a required remote read endpoint as
+// errors, but keeps label lookups best effort, since remote read does not
+// support them.
+type requiredQuerier struct {
+	storage.Querier
+}
+
+func (q requiredQuerier) LabelValues(ctx context.Context, name string, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	return labelsAsWarnings(q.Querier.LabelValues(ctx, name, hints, matchers...))
+}
+
+func (q requiredQuerier) LabelNames(ctx context.Context, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	return labelsAsWarnings(q.Querier.LabelNames(ctx, hints, matchers...))
+}
+
+// requiredChunkQuerier is the storage.ChunkQuerier equivalent of requiredQuerier.
+type requiredChunkQuerier struct {
+	storage.ChunkQuerier
+}
+
+func (q requiredChunkQuerier) LabelValues(ctx context.Context, name string, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	return labelsAsWarnings(q.ChunkQuerier.LabelValues(ctx, name, hints, matchers...))
+}
+
+func (q requiredChunkQuerier) LabelNames(ctx context.Context, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	return labelsAsWarnings(q.ChunkQuerier.LabelNames(ctx, hints, matchers...))
+}
+
+func labelsAsWarnings(vals []string, ws annotations.Annotations, err error) ([]string, annotations.Annotations, error) {
+	if err != nil {
+		return nil, ws.Add(err), nil
+	}
+	return vals, ws, nil
 }
 
 // Appender implements storage.Storage.

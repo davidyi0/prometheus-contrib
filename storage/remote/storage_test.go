@@ -14,16 +14,23 @@
 package remote
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
 
 	common_config "github.com/prometheus/common/config"
+	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/util/annotations"
+	"github.com/prometheus/prometheus/util/teststorage"
 )
 
 func TestStorageLifecycle(t *testing.T) {
@@ -124,6 +131,149 @@ func TestIgnoreExternalLabels(t *testing.T) {
 
 	err := s.Close()
 	require.NoError(t, err)
+}
+
+func TestRequiredRemoteRead(t *testing.T) {
+	remoteStore := teststorage.New(t)
+	app := remoteStore.Appender(context.Background())
+	_, err := app.Append(0, labels.FromStrings(model.MetricNameLabel, "up", "source", "remote"), 1000, 1)
+	require.NoError(t, err)
+	require.NoError(t, app.Commit())
+
+	working := httptest.NewServer(NewReadHandler(nil, nil, remoteStore, func() config.Config { return config.Config{} }, 1e6, 1, 0))
+	t.Cleanup(working.Close)
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+	}))
+	t.Cleanup(failing.Close)
+
+	type endpoint struct {
+		url              string
+		required         bool
+		readRecent       bool
+		requiredMatchers model.LabelSet
+	}
+	cases := []struct {
+		name          string
+		endpoints     []endpoint
+		expectErr     bool
+		expectWarning bool
+		expectSeries  int
+	}{
+		{
+			name:          "failing best effort endpoint returns a warning",
+			endpoints:     []endpoint{{url: failing.URL, readRecent: true}},
+			expectWarning: true,
+		},
+		{
+			name:      "failing required endpoint fails the query",
+			endpoints: []endpoint{{url: failing.URL, required: true, readRecent: true}},
+			expectErr: true,
+		},
+		{
+			name:         "working required endpoint returns its series",
+			endpoints:    []endpoint{{url: working.URL, required: true, readRecent: true}},
+			expectSeries: 1,
+		},
+		{
+			name: "failing best effort endpoint next to working required endpoint",
+			endpoints: []endpoint{
+				{url: failing.URL, readRecent: true},
+				{url: working.URL, required: true, readRecent: true},
+			},
+			expectWarning: true,
+			expectSeries:  1,
+		},
+		{
+			name: "failing required endpoint next to working best effort endpoint",
+			endpoints: []endpoint{
+				{url: working.URL, readRecent: true},
+				{url: failing.URL, required: true, readRecent: true},
+			},
+			expectErr: true,
+		},
+		{
+			name:      "required endpoint skipped by required_matchers",
+			endpoints: []endpoint{{url: failing.URL, required: true, readRecent: true, requiredMatchers: model.LabelSet{"job": "special"}}},
+		},
+		{
+			name:      "required endpoint skipped as local storage covers the time range",
+			endpoints: []endpoint{{url: failing.URL, required: true}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Local storage starts at 0, so without read_recent queries after 0 are served locally only.
+			rs := NewStorage(nil, nil, func() (int64, error) { return 0, nil }, t.TempDir(), defaultFlushDeadline, nil, false)
+			t.Cleanup(func() { require.NoError(t, rs.Close()) })
+
+			conf := &config.Config{GlobalConfig: config.DefaultGlobalConfig}
+			for _, e := range tc.endpoints {
+				rrConf := baseRemoteReadConfig(e.url)
+				rrConf.Required = e.required
+				rrConf.ReadRecent = e.readRecent
+				rrConf.RequiredMatchers = e.requiredMatchers
+				conf.RemoteReadConfigs = append(conf.RemoteReadConfigs, rrConf)
+			}
+			require.NoError(t, rs.ApplyConfig(conf))
+
+			fanout := storage.NewFanout(nil, teststorage.New(t), rs)
+			matcher := labels.MustNewMatcher(labels.MatchEqual, model.MetricNameLabel, "up")
+
+			check := func(t *testing.T, series int, err error, ws annotations.Annotations) {
+				t.Helper()
+				if tc.expectErr {
+					require.ErrorContains(t, err, "remote_read")
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, tc.expectSeries, series)
+				if tc.expectWarning {
+					require.Len(t, ws, 1)
+					require.ErrorContains(t, ws.AsErrors()[0], "remote_read")
+				} else {
+					require.Empty(t, ws)
+				}
+			}
+
+			t.Run("samples", func(t *testing.T) {
+				q, err := fanout.Querier(100, 2000)
+				require.NoError(t, err)
+				defer q.Close()
+
+				ss := q.Select(context.Background(), true, nil, matcher)
+				series := 0
+				for ss.Next() {
+					series++
+				}
+				check(t, series, ss.Err(), ss.Warnings())
+
+				// Remote read does not support label lookups, so they stay best effort.
+				_, _, err = q.LabelNames(context.Background(), nil)
+				require.NoError(t, err)
+				_, _, err = q.LabelValues(context.Background(), "source", nil)
+				require.NoError(t, err)
+			})
+			t.Run("chunks", func(t *testing.T) {
+				q, err := fanout.ChunkQuerier(100, 2000)
+				require.NoError(t, err)
+				defer q.Close()
+
+				ss := q.Select(context.Background(), true, nil, matcher)
+				series := 0
+				for ss.Next() {
+					series++
+				}
+				check(t, series, ss.Err(), ss.Warnings())
+
+				_, _, err = q.LabelNames(context.Background(), nil)
+				require.NoError(t, err)
+				_, _, err = q.LabelValues(context.Background(), "source", nil)
+				require.NoError(t, err)
+			})
+		})
+	}
 }
 
 // mustURLParse parses a URL and panics on error.
