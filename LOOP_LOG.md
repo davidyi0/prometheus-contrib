@@ -535,3 +535,95 @@ PR body: `Fixes #5662`; link bwplotka's 2023 comment supporting the feature and
 mention old PR #5667.
 
 Not yet claimed on GitHub - claim manually first.
+
+---
+
+## 2026-09-28 - Cycle 8 - prometheus/prometheus #2537 - VERIFIED-READY (docs + tests)
+
+**Issue:** prometheus/prometheus #2537 - "Cannot scrape targets specified by
+mDNS name". Adding mDNS support is not wanted here (earlier maintainers
+pointed to file_sd/http_sd). The latest maintainer comment (machine424, bug
+scrub 2026-08-25) asks for exactly this change: document the limitations of
+`dns_sd_config` and ideally add cases to `discovery/dns/dns_test.go`
+confirming them. It does **not** make `.local` names work, so the PR should
+say "Ref #2537" or ask the maintainers whether it closes the issue.
+
+**Branch:** `dns-sd-limitations` (5 commits, DCO-signed, pushed)
+- `discovery/dns: split resolv.conf loading from lookup` (pure refactor:
+  `lookupWithSearchPath` loads resolv.conf, then calls new unexported
+  `lookupWithConfig(name, qtype, *dns.ClientConfig, logger)`)
+- `discovery/dns: test name resolution against a local DNS server`
+- `docs: document dns_sd_config name resolution limitations`
+- `discovery/dns: test fallback between nameservers`
+- `docs: clarify dns_sd_config nameserver fallback`
+(The reviewer suggests squashing commits 4->2 and 5->3 before opening the PR;
+left unsquashed to avoid rewriting pushed history.)
+
+**Docs:** new text in `<dns_sd_config>` covers:
+- only nameserver/search/domain/ndots from `/etc/resolv.conf` are used;
+  queries go to port 53 in the order listed;
+- a missing file (e.g. Windows) makes lookups fail;
+- `/etc/hosts`, nsswitch and nss-mdns are not consulted;
+- no multicast DNS (`.local` names are ordinary unicast queries);
+- the next nameserver is only tried on timeout/SERVFAIL, and an NXDOMAIN
+  gives no targets and no error;
+- workarounds: a nameserver that answers for these names, or file_sd/http_sd.
+Every claim was checked against dns.go and miekg/dns `clientconfig.go`.
+
+**Tests:** new table test `TestLookupWithConfig`. It runs real UDP queries
+against an in-process miekg `dns.Server` on 127.0.0.1:0 (port injected via
+`conf.Port`; `nameserver 127.0.0.1` listed twice for multi-server cases) and
+asserts both the exact sequence of names queried and the result. 11 cases:
+- `.local` answered / unknown;
+- `localhost.` answered only by the nameserver;
+- search-domain order, ndots before/after, ndots option, FQDN skips search;
+- SERVFAIL gives an error;
+- NXDOMAIN from the first nameserver is final;
+- SERVFAIL falls through to the next nameserver;
+- no nameserver gives an error.
+Portable (loopback UDP, no host resolv.conf), goleak-clean, `-race` x5 clean.
+**Revert test:** this documents existing behaviour, so there is no fix to
+revert. At upstream/main the test fails to compile (needs the seam); on the
+refactor-only commit it passes. Mutation checks instead:
+- all-NXDOMAIN turned into an error: 5 subtests fail;
+- search order reversed: 4 fail;
+- NXDOMAIN not final per nameserver: 6 fail.
+
+**Review:** first-pass diagnosis by a subagent. Cycle 1 (fresh reviewer):
+CONCERNS - the docs said "if all nameservers answer NXDOMAIN", but the first
+nameserver's NXDOMAIN is final. Fixed the docs and added two multi-nameserver
+test cases. Cycle 2 (fresh reviewer): **SIGN-OFF**. Non-blocking notes:
+(1) squash as above; (2) the docs could note that NXDOMAIN (or empty
+NOERROR) applies per search-expanded candidate, and "no targets" only when
+all candidates are NXDOMAIN; (3) the "/etc/hosts is not consulted" case really
+shows "the answer only comes from the configured nameserver" - consider
+renaming it; (4) the timeout fallback is untested (~2s per attempt).
+
+**Scope:** matches the request - docs, tests, plus a 5-line unexported
+extract-function refactor needed so tests can point lookups at a server on a
+non-53 port (resolv.conf can't carry a port).
+
+**make lint:** exit 2 - only the pre-existing
+`notifier/alertmanager.go:48` revive finding (completed without timeout this
+time); `golangci-lint run ./discovery/dns/...` clean.
+**act:** CI job `golangci` via act + Docker: **inconclusive** - my 25-min
+wall-clock limit killed it (exit 124) mid-run with zero findings reported;
+same as cycle 7's run (golangci-lint's own timeout). Test jobs not run via act
+(same suite as `make test`).
+**make test:** exit 2 - only `cmd/prometheus` (TestStartupInterrupt,
+TestRemoteWrite_* and TestHeadCompactionWhileScraping; all fail the same way on
+clean upstream/main with `-race` tonight, see cycle 7) and `tsdb` (10m
+timeout; passes in isolation, 623s). This branch touches only `discovery/dns`
+and docs. `./discovery/dns/` passes (with `-race`).
+
+**Suggested PR title:** `discovery/dns: document and test name resolution limitations`
+
+**Suggested release-notes block:**
+```release-notes
+NONE
+```
+(Docs + tests only. `[ENHANCEMENT] Docs: ...` would be the alternative if
+maintainers want it listed.) PR body: "Ref #2537" and quote machine424's
+2026-08-25 request.
+
+Not yet claimed on GitHub - claim manually first.
