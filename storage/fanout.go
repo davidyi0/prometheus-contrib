@@ -40,8 +40,11 @@ type fanout struct {
 // * If the primary querier returns an error, then any of the Querier operations will fail.
 // * If any secondary querier returns an error the result from that queries is discarded. The overall operation will succeed,
 // and the error from the secondary querier will be returned as a warning.
+// * If a secondary Storage implements RequiredQueryable, the queriers it returns from RequiredQuerier and
+// RequiredChunkQuerier are handled like the primary querier.
 //
-// NOTE: In the case of Prometheus, it treats all remote storages as secondary / best effort.
+// NOTE: In the case of Prometheus, it treats all remote storages as secondary / best effort, except
+// remote read endpoints configured as required.
 func NewFanout(logger *slog.Logger, primary Storage, secondaries ...Storage) Storage {
 	return &fanout{
 		logger:      logger,
@@ -77,25 +80,34 @@ func (f *fanout) Querier(mint, maxt int64) (Querier, error) {
 		return nil, err
 	}
 
+	primaries := []Querier{primary}
 	secondaries := make([]Querier, 0, len(f.secondaries))
 	for _, storage := range f.secondaries {
 		querier, err := storage.Querier(mint, maxt)
+		if err == nil {
+			if _, ok := querier.(noopQuerier); !ok {
+				secondaries = append(secondaries, querier)
+			}
+			if rq, ok := storage.(RequiredQueryable); ok {
+				querier, err = rq.RequiredQuerier(mint, maxt)
+				if err == nil {
+					primaries = append(primaries, querier)
+				}
+			}
+		}
 		if err != nil {
 			// Close already open Queriers, append potential errors to returned error.
-			errs := []error{
-				err,
-				primary.Close(),
+			errs := []error{err}
+			for _, q := range primaries {
+				errs = append(errs, q.Close())
 			}
 			for _, q := range secondaries {
 				errs = append(errs, q.Close())
 			}
 			return nil, errors.Join(errs...)
 		}
-		if _, ok := querier.(noopQuerier); !ok {
-			secondaries = append(secondaries, querier)
-		}
 	}
-	return NewMergeQuerier([]Querier{primary}, secondaries, ChainedSeriesMerge), nil
+	return NewMergeQuerier(primaries, secondaries, ChainedSeriesMerge), nil
 }
 
 func (f *fanout) ChunkQuerier(mint, maxt int64) (ChunkQuerier, error) {
@@ -104,23 +116,32 @@ func (f *fanout) ChunkQuerier(mint, maxt int64) (ChunkQuerier, error) {
 		return nil, err
 	}
 
+	primaries := []ChunkQuerier{primary}
 	secondaries := make([]ChunkQuerier, 0, len(f.secondaries))
 	for _, storage := range f.secondaries {
 		querier, err := storage.ChunkQuerier(mint, maxt)
+		if err == nil {
+			secondaries = append(secondaries, querier)
+			if rq, ok := storage.(RequiredQueryable); ok {
+				querier, err = rq.RequiredChunkQuerier(mint, maxt)
+				if err == nil {
+					primaries = append(primaries, querier)
+				}
+			}
+		}
 		if err != nil {
 			// Close already open Queriers, append potential errors to returned error.
-			errs := []error{
-				err,
-				primary.Close(),
+			errs := []error{err}
+			for _, q := range primaries {
+				errs = append(errs, q.Close())
 			}
 			for _, q := range secondaries {
 				errs = append(errs, q.Close())
 			}
 			return nil, errors.Join(errs...)
 		}
-		secondaries = append(secondaries, querier)
 	}
-	return NewMergeChunkQuerier([]ChunkQuerier{primary}, secondaries, NewCompactingChunkSeriesMerger(ChainedSeriesMerge)), nil
+	return NewMergeChunkQuerier(primaries, secondaries, NewCompactingChunkSeriesMerger(ChainedSeriesMerge)), nil
 }
 
 func (f *fanout) Appender(ctx context.Context) Appender {

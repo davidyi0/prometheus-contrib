@@ -77,6 +77,17 @@ type SampleAndChunkQueryable interface {
 	ChunkQueryable
 }
 
+// RequiredQueryable can be implemented by a secondary Storage passed to NewFanout
+// that has sources which must not be treated as best effort. Queriers returned
+// by it are handled like the primary querier, so their errors fail the query
+// instead of being returned as warnings.
+type RequiredQueryable interface {
+	// RequiredQuerier returns a Querier over the required sources only.
+	RequiredQuerier(mint, maxt int64) (Querier, error)
+	// RequiredChunkQuerier returns a ChunkQuerier over the required sources only.
+	RequiredChunkQuerier(mint, maxt int64) (ChunkQuerier, error)
+}
+
 // Storage ingests and manages samples, along with various indexes. All methods
 // are goroutine-safe.
 type Storage interface {

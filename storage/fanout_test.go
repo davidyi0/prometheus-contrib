@@ -259,6 +259,20 @@ func TestFanoutErrors(t *testing.T) {
 			warning:   nil,
 			err:       errSelect,
 		},
+		{
+			// A failing required source fails the query.
+			primary:   workingStorage,
+			secondary: requiredStorage{Storage: workingStorage, required: errStorage{}},
+			warning:   nil,
+			err:       errSelect,
+		},
+		{
+			// A failing best-effort source is still a warning when a required source works.
+			primary:   workingStorage,
+			secondary: requiredStorage{Storage: errStorage{}, required: workingStorage},
+			warning:   errSelect,
+			err:       nil,
+		},
 	}
 
 	for _, tc := range cases {
@@ -279,12 +293,16 @@ func TestFanoutErrors(t *testing.T) {
 
 			if tc.err != nil {
 				require.EqualError(t, ss.Err(), tc.err.Error())
+			} else {
+				require.NoError(t, ss.Err())
 			}
 
 			if tc.warning != nil {
 				w := ss.Warnings()
 				require.NotEmpty(t, w, "warnings expected")
 				require.EqualError(t, w.AsErrors()[0], tc.warning.Error())
+			} else {
+				require.Empty(t, ss.Warnings())
 			}
 		})
 		t.Run("chunks", func(t *testing.T) {
@@ -350,6 +368,20 @@ func (errQuerier) Close() error { return nil }
 
 func (errChunkQuerier) Select(context.Context, bool, *storage.SelectHints, ...*labels.Matcher) storage.ChunkSeriesSet {
 	return storage.ErrChunkSeriesSet(errSelect)
+}
+
+// requiredStorage is a secondary storage that also has a required source.
+type requiredStorage struct {
+	storage.Storage
+	required storage.Storage
+}
+
+func (s requiredStorage) RequiredQuerier(mint, maxt int64) (storage.Querier, error) {
+	return s.required.Querier(mint, maxt)
+}
+
+func (s requiredStorage) RequiredChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
+	return s.required.ChunkQuerier(mint, maxt)
 }
 
 type mockStorage struct {
