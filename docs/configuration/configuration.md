@@ -1792,6 +1792,25 @@ This service discovery method only supports basic DNS A, AAAA, MX, NS and SRV
 record queries, but not the advanced DNS-SD approach specified in
 [RFC6763](https://tools.ietf.org/html/rfc6763).
 
+Names are resolved by Prometheus' own DNS client, not by the operating system's
+resolver. This has the following limitations:
+
+* Only the `nameserver`, `search`, `domain` and `options ndots:` settings of
+  `/etc/resolv.conf` are used. Nameservers are queried on port 53, in the
+  order listed. If the file does not exist (for example on Windows), the
+  lookup fails.
+* `/etc/hosts`, `/etc/nsswitch.conf` and NSS modules such as `nss-mdns` are not
+  consulted.
+* Multicast DNS ([RFC6762](https://tools.ietf.org/html/rfc6762)) is not
+  supported. Names such as `printer.local` are sent as ordinary queries to the
+  configured nameservers.
+* If all nameservers answer that a name does not exist, the name yields no
+  targets and no error is reported.
+
+To discover targets through mDNS or other non-DNS name resolution, generate the
+list of targets with an external tool and use [`file_sd_config`](#file_sd_config)
+or [`http_sd_config`](#http_sd_config) instead.
+
 The following meta labels are available on targets during [relabeling](#relabel_config):
 
 * `__meta_dns_name`: the record name that produced the discovered target.
