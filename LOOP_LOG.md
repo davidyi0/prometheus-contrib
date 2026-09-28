@@ -415,3 +415,123 @@ public GitHub action, so they're out of scope for this loop. **If David
 forks prometheus/common, #98 is a small, clean next pick.**
 
 **Queue exhausted - stopping.**
+
+---
+
+## 2026-09-28 - Cycle 7 - prometheus/prometheus #5662 - VERIFIED-READY
+
+**Calibration check:** no PRs yet from `consul-nomad-tag-labels` or
+`federate-exemplars` (one night old - pending, not abandoned).
+`relabel-drop-if-any` was never VERIFIED-READY.
+
+**Re-sweep:** last night's entry said queue exhausted, so re-checked all 111
+open `help wanted` / `good first issue` issues for open linked PRs (timeline
+cross-refs + PR search) and read the comments of every one without one.
+Newly skipped: #17109 (claimed by LeonxLJX + beorn7 wants a design doc),
+#14823 (already fixed by #14965/#16072 per latest comment), #12559 (open PR
+#19150, not linked in the timeline), #11882/#8787/#8511/#7230/#6627/#5868/
+#4057/#2615/#2347/#2204/#1220/#1154 (large designs, undecided, or dependent on
+other work). Left over and eligible: **#5662** (picked) and **#2537**
+(machine424, 2026-08-25: document `dns_sd_config` limitations for `.local`/mDNS
+names + add cases to `discovery/dns/dns_test.go` - small docs+tests task, a
+good next pick).
+
+**Issue:** prometheus/prometheus #5662 - "Option to make failures of
+non-primary reads not warnings". bwplotka (2023 bug scrub): "we would be
+supportive for this feature ... your old PR #5667 looks reasonable".
+
+**Branch:** `remote-read-required` (5 commits, DCO-signed, pushed)
+- `config: add required option to remote_read`
+- `storage: let fanout secondaries expose required queriers`
+- `remote: fail queries on errors from required remote_read endpoints`
+- `docs: document required option for remote_read`
+- `storage: select required remote_read endpoints concurrently`
+
+**Root cause:** remote read errors are downgraded to warnings twice - once in
+`remote.Storage`'s own merge (all endpoints secondary) and again in fanout,
+which wraps the whole remote storage as a secondary. Fixing only
+`remote.Storage` is not enough.
+
+**Change:** new `required: <bool>` (default false) on `remote_read`. New
+optional `storage.RequiredQueryable` interface (`RequiredQueriers` /
+`RequiredChunkQueriers`, one querier per required source). Fanout appends
+those queriers to its primaries, so their Select errors fail the query, and
+selects multiple primaries concurrently (via unexported
+`newMergeQuerier(..., concurrentPrimaries)`; `NewMergeQuerier` behaviour for
+other callers unchanged). `remote.Storage` splits configs into
+`queryables` / `requiredQueryables`; required queriers are wrapped so
+`LabelNames`/`LabelValues` stay best effort (remote read returns "not
+implemented" for them - otherwise every label API call would fail once any
+endpoint is required). Endpoints skipped via `required_matchers` or
+`read_recent: false` stay noops (no error). No exported signature changed.
+
+**Tests:**
+- `TestFanoutErrors` (storage): +2 cases (failing required source -> error;
+  failing best-effort next to working required -> warning only); table now
+  also asserts no error / no warnings where none expected.
+- `TestFanoutRequiredQueriersSelectConcurrently` (storage): barrier queriers
+  that only succeed if both required Selects run concurrently, and asserts
+  both ran; samples + chunks.
+- `TestRequiredRemoteRead` (storage/remote): end-to-end through real fanout +
+  `remote.Storage` + `httptest` servers (a real `NewReadHandler` and a 500
+  server); 9 cases incl. mixed required/best-effort, two required, skip via
+  required_matchers, skip via read_recent; samples + chunks; label APIs
+  never error.
+- Config fixture/expected struct updated.
+Revert test: with the test files on upstream/main, the fanout tests fail;
+config/remote tests fail to compile (no field). On the config-only commit
+(field present, no fix), the fanout tests and the 3 failing-required-endpoint
+cases fail ("An error is expected but got nil"). All pass on the branch; the
+concurrency test also fails if concurrent Select is removed.
+
+**Review:** first-pass diagnosis by a subagent. Review cycle 1 (fresh
+reviewer, issue + diff only): CONCERNS - required endpoints were Selected
+one after another (latency = sum of round trips). Fixed by the 5th commit.
+Review cycle 2 (fresh reviewer): **SIGN-OFF**. Non-blocking notes:
+(1) `Querier` and `RequiredQueriers` take `s.mtx` separately, so a config
+reload between them can make one query see an endpoint twice or not at all
+(transient, harmless); (2) queriers already built aren't closed if
+`RequiredQueriers` fails partway (remote Close is a no-op today);
+(3) docs could say Prometheus's own `/api/v1/read` also fails when a required
+upstream fails (goes through fanout; `/federate` does not); (4) maintainers
+may push back on a new exported interface vs. a marker error passed through
+`secondaryQuerier` - be ready to explain it; (5) two new test functions rather
+than table cases (different setups).
+
+**Scope:** matches the issue. ~150 non-test lines across config, storage
+(interface + fanout + merge constructor), storage/remote, docs. The
+`storage` changes are required, because fanout is where the second
+error-to-warning downgrade happens.
+
+**make lint:** exit 2 - the known `notifier/alertmanager.go:48` revive
+finding (pre-existing on upstream/main, local golangci-lint 2.14.0) plus
+golangci-lint's 4m timeout. So also ran
+`golangci-lint run --timeout 20m ./config/... ./storage/...`: clean.
+**act:** ran CI job `golangci` (golangci-lint 2.13.1) via act + Docker:
+**inconclusive** - "Timeout exceeded" with zero findings reported
+(infrastructure timeout, not a code finding). Did not run the act test jobs
+(same suite as `make test`, too slow here).
+**make test:** exit 2 (run after the review fix). Failures and follow-up:
+- `cmd/prometheus`: TestStartupInterrupt, TestRemoteWrite_* ("didn't start
+  in time") fail identically on clean upstream/main with `-race`; the package
+  passes on the branch without `-race` (33.6s).
+- TestHeadCompactionWhileScraping failed twice, then passed 4/4 on both
+  branch and base (timing flake; no remote_read configured).
+- `promql` 10m timeout (in TestConcurrentRangeQueries under load): passes in
+  isolation with `-race` (412s).
+- `tsdb` 10m timeout: passes in isolation with `-race` (623s - over the
+  per-package 10m default).
+- First run also had TestReshard (remote write) fail under load:
+  `storage/remote` passes in isolation with `-race`.
+UI steps not reached (no UI changes).
+
+**Suggested PR title:** `remote: add required option to fail queries on remote_read errors`
+
+**Suggested release-notes block:**
+```release-notes
+[FEATURE] Remote read: Add `required` option to `remote_read`. When set, errors from that endpoint fail the query (including rule evaluations) instead of being returned as warnings.
+```
+PR body: `Fixes #5662`; link bwplotka's 2023 comment supporting the feature and
+mention old PR #5667.
+
+Not yet claimed on GitHub - claim manually first.
