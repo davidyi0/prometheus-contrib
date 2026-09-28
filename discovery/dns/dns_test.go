@@ -443,6 +443,21 @@ func TestLookupWithConfig(t *testing.T) {
 			expectErr:     true,
 		},
 		{
+			// Both nameservers are the same fake server, so every query to either is recorded.
+			name:          "a nameserver saying the name does not exist is final",
+			resolvConf:    "nameserver 127.0.0.1\nnameserver 127.0.0.1\n",
+			lookup:        "printer.local.",
+			expectQueries: []string{"printer.local."},
+		},
+		{
+			name:          "the next nameserver is tried after a server failure",
+			resolvConf:    "nameserver 127.0.0.1\nnameserver 127.0.0.1\n",
+			lookup:        "printer.local.",
+			answers:       map[string]fakeAnswer{"printer.local.": {rcode: dns.RcodeServerFailure}},
+			expectQueries: []string{"printer.local.", "printer.local."},
+			expectErr:     true,
+		},
+		{
 			name:       "no nameserver is an error",
 			resolvConf: "search a.example\n",
 			lookup:     "web",
