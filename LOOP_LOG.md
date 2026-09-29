@@ -627,3 +627,26 @@ maintainers want it listed.) PR body: "Ref #2537" and quote machine424's
 2026-08-25 request.
 
 Not yet claimed on GitHub - claim manually first.
+
+---
+
+## 2026-09-29 - Cycle 9 - Queue exhausted
+
+**Calibration check:** no PRs yet from `consul-nomad-tag-labels`,
+`federate-exemplars`, `remote-read-required` or `dns-sd-limitations`
+(1-2 nights old - pending, not abandoned).
+
+**Sweep:** 92 open, unassigned `help wanted` / `good first issue` issues in
+prometheus/prometheus.
+- 36 not named in this log: every one has an open cross-referenced PR in
+  prometheus/prometheus (checked via the issue timeline), so all are claimed.
+- 48 named in this log with no open PR: none changed since cycle 7/8 except
+  #6222, which LudwigJMarx asked to take on 2026-09-29 (now claimed as well).
+  The rest are still done (#14057, #12896, #10029, #5662, #2537), claimed
+  (#12559 via PR #19150, #15350, #17109), or skipped for the reasons in cycles
+  6-7 (design needed, maintainers undecided, not testable here, large).
+- Sibling repos: still out of scope. David only has a fork of
+  prometheus/prometheus, and making a fork is a public action (see cycle 6;
+  prometheus/common #98 is still the suggested pick if he forks it).
+
+**Queue exhausted - stopping.**
